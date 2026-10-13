@@ -1,0 +1,105 @@
+"""The agent's tools: a connection to the image-captioner MCP server."""
+
+from __future__ import annotations
+
+import logging
+import os
+import sys
+from contextlib import AsyncExitStack
+from dataclasses import dataclass
+from typing import Any, Protocol
+
+from mcp import Client, StdioServerParameters
+
+from .settings import Settings
+
+logger = logging.getLogger(__name__)
+
+# The first caption call can wait on a model download and load.
+TOOL_TIMEOUT_SECONDS = 900.0
+# Credentials the captioning server has no use for and must not inherit.
+_WITHHELD_ENV_PREFIXES = ("ANTHROPIC_",)
+
+
+@dataclass(frozen=True)
+class ToolResult:
+    text: str
+    is_error: bool = False
+
+
+class Toolbox(Protocol):
+    """A set of tools Claude can call."""
+
+    def definitions(self) -> list[dict[str, Any]]:
+        """Tool definitions in Claude API format."""
+        ...
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> ToolResult: ...
+
+
+class McpToolbox:
+    """Tools served by an MCP server, over stdio (spawned here) or streamable HTTP."""
+
+    def __init__(self, settings: Settings, target: Any = None) -> None:
+        """``target`` overrides the configured server with anything ``mcp.Client``
+        accepts, such as an in-process server instance in tests."""
+        self._settings = settings
+        self._target_override = target
+        self._stack = AsyncExitStack()
+        self._client: Client | None = None
+        self._definitions: list[dict[str, Any]] = []
+
+    async def connect(self) -> None:
+        target = self._target_override if self._target_override is not None else self._target()
+        self._client = await self._stack.enter_async_context(Client(target))
+        listed = await self._client.list_tools()
+        self._definitions = [
+            {
+                "name": tool.name,
+                "description": tool.description or "",
+                "input_schema": tool.input_schema,
+                # Inputs stream as generated; the agent validates them before use.
+                "eager_input_streaming": True,
+            }
+            for tool in listed.tools
+        ]
+        logger.info("Connected to MCP server with tools: %s", [d["name"] for d in self._definitions])
+
+    async def close(self) -> None:
+        await self._stack.aclose()
+        self._client = None
+
+    def _target(self) -> StdioServerParameters | str:
+        mcp = self._settings.mcp
+        if mcp.transport == "http":
+            return mcp.url
+        env = {
+            key: value
+            for key, value in os.environ.items()
+            if not key.upper().startswith(_WITHHELD_ENV_PREFIXES)
+        }
+        if self._settings.vision_backend == "claude":
+            # The local model is not used, so do not load it into VRAM at startup.
+            env["CAPTIONER_PRELOAD"] = "false"
+        env.update(mcp.env)
+        env["CAPTIONER_ALLOWED_ROOT"] = str(self._settings.sessions_dir)
+        env["CAPTIONER_CRITERIA_FILE"] = str(self._settings.criteria_file)
+        if mcp.command:
+            return StdioServerParameters(command=mcp.command, args=mcp.args, env=env)
+        return StdioServerParameters(
+            command=sys.executable, args=["-m", "image_captioner_mcp.server", *mcp.args], env=env
+        )
+
+    def definitions(self) -> list[dict[str, Any]]:
+        return self._definitions
+
+    async def call(self, name: str, arguments: dict[str, Any]) -> ToolResult:
+        if self._client is None:
+            return ToolResult("The captioning server is not connected.", is_error=True)
+        try:
+            result = await self._client.call_tool(name, arguments, read_timeout_seconds=TOOL_TIMEOUT_SECONDS)
+        except Exception:
+            logger.exception("MCP call %s failed", name)
+            return ToolResult("The captioning server did not respond. It may have stopped.", is_error=True)
+        text = "\n".join(block.text for block in result.content if block.type == "text")
+        return ToolResult(text or "(no output)", is_error=bool(result.is_error))

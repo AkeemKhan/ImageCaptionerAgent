@@ -1,0 +1,35 @@
+# Runs the two applications as separate containers that share one data volume.
+#   docker compose up --build        then open http://127.0.0.1:8000
+# Needs ANTHROPIC_API_KEY in .env and, for GPU inference, the NVIDIA Container Toolkit.
+services:
+  captioner:
+    build: ./image-captioner-mcp
+    environment:
+      CAPTIONER_MODEL_ID: microsoft/Florence-2-large
+      CAPTIONER_DEVICE: auto
+    volumes:
+      - sessions:/data/sessions
+      - models:/models
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  agent:
+    build: ./captioner-agent
+    env_file: .env
+    depends_on:
+      - captioner
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - sessions:/data/sessions
+      - agent-data:/data
+
+volumes:
+  sessions:
+  models:
+  agent-data:

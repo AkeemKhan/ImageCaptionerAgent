@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Image Captioner</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand">Image Captioner</div>
+      <button class="btn btn-primary" id="new-chat" type="button">New chat</button>
+      <nav class="sessions" id="sessions" aria-label="Chats"></nav>
+      <div class="sidebar-foot" id="model-label"></div>
+    </aside>
+
+    <main class="chat" id="chat">
+      <header class="chat-header">
+        <button class="icon-btn only-narrow" id="toggle-sidebar" type="button" aria-label="Show chats">&#9776;</button>
+        <h1 id="chat-title">New chat</h1>
+        <button class="btn" id="toggle-panel" type="button">Captions</button>
+      </header>
+
+      <div class="messages" id="messages" aria-live="polite"></div>
+
+      <form class="composer" id="composer">
+        <div class="tray" id="tray" hidden></div>
+        <div class="composer-row">
+          <textarea id="input" rows="1" placeholder="Drop, paste or attach images, then tell me what you need"></textarea>
+          <div class="composer-actions">
+            <button class="btn" id="attach-files" type="button" title="Attach images">Images</button>
+            <button class="btn" id="attach-folder" type="button" title="Attach a folder of images">Folder</button>
+            <button class="btn btn-primary" id="send" type="submit">Send</button>
+          </div>
+        </div>
+        <input id="file-input" type="file" accept=".png,.jpg,.jpeg,.webp" multiple hidden>
+        <input id="folder-input" type="file" webkitdirectory multiple hidden>
+      </form>
+      <div class="drop-overlay" id="drop-overlay" hidden>Drop images or folders to attach</div>
+    </main>
+
+    <aside class="panel" id="panel">
+      <header class="panel-header">
+        <h2>Captions <span class="count" id="output-count"></span></h2>
+        <a class="btn" id="download" href="#" hidden>Download ZIP</a>
+      </header>
+      <div class="outputs" id="outputs"></div>
+    </aside>
+  </div>
+  <script src="app.js" defer></script>
+</body>
+</html>

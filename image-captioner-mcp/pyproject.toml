@@ -1,0 +1,41 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "image-captioner-mcp"
+version = "0.1.0"
+description = "MCP server exposing local image captioning, PNG metadata reading and image flipping tools."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "mcp>=1.10",
+    "pillow>=10.0",
+]
+
+[project.optional-dependencies]
+# The local captioning model. Install torch separately for your CUDA version:
+# https://pytorch.org/get-started/locally/
+florence = [
+    "torch>=2.1",
+    "transformers>=4.41,<4.50",
+    "timm>=0.9",
+    "einops>=0.7",
+]
+dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10"]
+
+[project.scripts]
+image-captioner-mcp = "image_captioner_mcp.server:main"
+png-info-caption = "image_captioner_mcp.png_caption:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/image_captioner_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+ignore_missing_imports = true
+files = ["src"]

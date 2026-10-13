@@ -1,0 +1,74 @@
+# ---- Secrets: never commit these ----
+# Real environment files. .env.example is the committed template and is not matched.
+.env
+.env.*
+!.env.example
+# Keys, certificates and credential stores, wherever they appear.
+*.pem
+*.key
+*.p12
+*.pfx
+*.crt
+*.jks
+*.keystore
+credentials.json
+secrets.*
+*.secret
+.netrc
+.pypirc
+.npmrc
+
+# ---- Runtime data: uploads, captions and chat history (may contain personal images) ----
+data/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+uploads/
+outputs/
+sessions/
+
+# ---- Logs and temporary files ----
+*.log
+*.tmp
+*.bak
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- Python ----
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+build/
+dist/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.ipynb_checkpoints/
+
+# ---- Editors and IDEs ----
+.vscode/
+.idea/
+*.code-workspace
+
+# ---- Model weights and caches (large, and downloaded on first run) ----
+models/
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.ckpt
+hf_cache/
+.cache/
+
+# ---- Docker ----
+docker-compose.override.yml

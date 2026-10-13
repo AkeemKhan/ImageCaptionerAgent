@@ -1,0 +1,11 @@
+# Settings used inside the Docker image: the MCP server runs in its own
+# container and both mount the same volume at /data/sessions.
+model: claude-opus-5-5
+effort: medium
+host: 0.0.0.0
+port: 8000
+data_dir: /data
+criteria_file: config/caption_criteria.md
+mcp:
+  transport: http
+  url: http://captioner:8765/mcp
