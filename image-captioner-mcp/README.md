@@ -12,7 +12,8 @@ MCP client, including Claude Desktop and Claude Code.
 | `list_images(directory)` | Lists png, jpg, jpeg and webp files in a directory. |
 | `read_png_metadata(path)` | Returns the prompt an image generator embedded (AUTOMATIC1111/Forge, ComfyUI, NovelAI, InvokeAI, Fooocus), or any other embedded text. |
 | `caption_from_png_info(path, output_dir, overwrite)` | Writes the caption from the embedded prompt: everything before `Negative prompt:`, with `( ) [ ] { } < > :`, attention weights and `<lora:...>` tags removed. No model. Reports `found: false` when there is no PNG info. |
-| `caption_image(path, style)` | Describes the image with the local model. `style` is `short`, `detailed` or `more_detailed`. |
+| `caption_image(path, style)` | Describes the image with the local Florence-2 model. `style` is `short`, `detailed` or `more_detailed`. |
+| `BLIP_CAPTIONER(path, style)` | Describes the image with the local BLIP model (default style `short`). Returns the caption without saving it. |
 | `write_caption(image_path, text, output_dir, overwrite)` | Writes `Image1.txt` for `Image1.png`. |
 | `flip_image(path, output_dir, direction)` | Saves `Image1_flipped.png`. |
 | `mirror_caption(text)` | Swaps "left" and "right" so a caption fits the flipped copy. |
@@ -47,6 +48,28 @@ png-info-caption Image1.png
 png-info-caption D:\dataset --output-dir D:\dataset\captions --no-overwrite
 ```
 
+## Download the models
+
+Each model downloads the first time it is used, which can take minutes and
+looks like a hang. Download them ahead of time instead:
+
+```
+captioner-download-models              # BLIP only, about 1.9 GB
+captioner-download-models --all        # BLIP and Florence-2, about 3.4 GB
+captioner-download-models --dry-run    # list the files without downloading
+```
+
+Only one copy of the weights is fetched (safetensors where available). The
+large BLIP repository also holds PyTorch and TensorFlow copies of the same
+weights, so a plain `git clone` or `snapshot_download` would fetch about 5.6 GB.
+
+Models are cached in `%USERPROFILE%\.cache\huggingface\hub`. To put the cache
+on another drive, set `HF_HOME` before running anything. Nothing needs a
+Hugging Face account or token. BLIP is BSD-3-Clause licensed and not gated.
+
+BLIP runs in about 1 GB of VRAM (Florence-2 large uses about 1.8 GB) and loads
+in a few seconds once cached.
+
 ## Configuration
 
 All settings are environment variables.
@@ -61,6 +84,9 @@ All settings are environment variables.
 | `CAPTIONER_MIN_FREE_VRAM_MB` | `3000` | Below this much free VRAM, `auto` uses the CPU. |
 | `CAPTIONER_MAX_IMAGE_SIDE` | `1024` | Images are downscaled to this before inference. |
 | `CAPTIONER_PRELOAD` | `true` | Load the model at startup instead of on first use. |
+| `CAPTIONER_BLIP_MODEL_ID` | `Salesforce/blip-image-captioning-large` | Use `Salesforce/blip-image-captioning-base` (about 1 GB) to save disk and VRAM. |
+| `CAPTIONER_BLIP_MODEL_REVISION` | unset | Pin the BLIP repository to a commit. |
+| `CAPTIONER_PRELOAD_BLIP` | `false` | Load BLIP at startup instead of on first use. |
 | `CAPTIONER_CRITERIA_FILE` | unset | Markdown file used by the `simplify_caption` prompt. |
 
 ## Safety
@@ -72,7 +98,8 @@ All settings are environment variables.
   model to the CPU instead of failing.
 - **Model code.** Florence-2 loads with `trust_remote_code`, which runs Python
   from the model repository. Set `CAPTIONER_MODEL_REVISION` to a commit you
-  have reviewed to keep that code fixed.
+  have reviewed to keep that code fixed. BLIP does not need it: its code ships
+  with `transformers` and its weights are plain safetensors.
 
 ## Claude Desktop
 

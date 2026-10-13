@@ -6,16 +6,20 @@ from pathlib import Path
 from typing import Any
 
 from . import imaging, png_caption, png_meta
-from .captioner import CAPTION_STYLES, Captioner, CaptionStyle
+from .captioner import CAPTION_STYLES, Captioner, CaptionStyle, create_blip_captioner
 from .config import ServerConfig
 
 
 class CaptionService:
     """Implements each tool against paths confined to ``config.allowed_root``."""
 
-    def __init__(self, config: ServerConfig, captioner: Captioner) -> None:
+    def __init__(
+        self, config: ServerConfig, captioner: Captioner, blip_captioner: Captioner | None = None
+    ) -> None:
         self.config = config
         self.captioner = captioner
+        # Creating a BLIP captioner loads nothing; its model loads on first use.
+        self.blip_captioner = blip_captioner or create_blip_captioner(config)
 
     def resolve(self, path: str) -> Path:
         return imaging.resolve_inside(self.config.allowed_root, path)
@@ -50,17 +54,23 @@ class CaptionService:
         }
 
     def caption_image(self, path: str, style: CaptionStyle = "detailed") -> dict[str, Any]:
+        return self._caption_with(self.captioner, path, style)
+
+    def blip_caption(self, path: str, style: CaptionStyle = "short") -> dict[str, Any]:
+        return self._caption_with(self.blip_captioner, path, style)
+
+    def _caption_with(self, captioner: Captioner, path: str, style: CaptionStyle) -> dict[str, Any]:
         if style not in CAPTION_STYLES:
             raise ValueError(f"style must be one of {', '.join(CAPTION_STYLES)}")
         image_path = self.resolve(path)
         image = imaging.load_rgb(image_path, self.config.max_image_side)
-        caption = self.captioner.caption(image, style)
+        caption = captioner.caption(image, style)
         return {
             "path": self._display(image_path),
             "caption": caption,
             "style": style,
-            "backend": self.captioner.name,
-            "device": self.captioner.device,
+            "backend": captioner.name,
+            "device": captioner.device,
         }
 
     def write_caption(

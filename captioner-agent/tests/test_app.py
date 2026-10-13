@@ -78,6 +78,8 @@ def test_message_streams_events_and_persists_transcript(client: TestClient, prov
     # The pipeline captions the upload first (no PNG info, so vision), then Claude's turn runs.
     assert [(e["type"], e.get("name")) for e in events] == [
         ("tool_start", "caption_from_png_info"),
+        ("tool_end", "caption_from_png_info"),
+        ("tool_start", "caption_with_vision"),
         ("tool_end", "caption_with_vision"),
         ("tool_start", "read_png_metadata"),
         ("tool_end", "read_png_metadata"),
@@ -87,7 +89,7 @@ def test_message_streams_events_and_persists_transcript(client: TestClient, prov
     ]
     session = client.get(f"/api/sessions/{sid}").json()
     assert session["title"] == "caption it"
-    assert [t["type"] for t in session["transcript"]] == ["user", "tool", "tool", "assistant"]
+    assert [t["type"] for t in session["transcript"]] == ["user", "tool", "tool", "tool", "assistant"]
     assert client.get("/api/sessions").json()[0]["id"] == sid
 
 

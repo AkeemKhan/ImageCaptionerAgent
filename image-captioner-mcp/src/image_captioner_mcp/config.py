@@ -33,6 +33,10 @@ class ServerConfig:
     max_image_side: int = 1024
     max_new_tokens: int = 512
     preload: bool = True
+    # BLIP is a second, smaller model behind the BLIP_CAPTIONER tool.
+    blip_model_id: str = "Salesforce/blip-image-captioning-large"
+    blip_model_revision: str | None = None
+    preload_blip: bool = False
     criteria_file: Path | None = None
 
     @classmethod
@@ -51,5 +55,8 @@ class ServerConfig:
             max_image_side=int(_env("MAX_IMAGE_SIDE", "1024")),
             max_new_tokens=int(_env("MAX_NEW_TOKENS", "512")),
             preload=_env_bool("PRELOAD", True),
+            blip_model_id=_env("BLIP_MODEL_ID", "Salesforce/blip-image-captioning-large"),
+            blip_model_revision=_env("BLIP_MODEL_REVISION", "") or None,
+            preload_blip=_env_bool("PRELOAD_BLIP", False),
             criteria_file=Path(criteria).expanduser() if (criteria := _env("CRITERIA_FILE", "")) else None,
         )

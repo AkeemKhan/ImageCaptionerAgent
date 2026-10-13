@@ -33,8 +33,9 @@ class Settings(BaseModel):
 
     data_dir: Path = Path("data")
     criteria_file: Path = Path("config") / "caption_criteria.md"
-    # Who captions an image that has no PNG info: Claude, or the local model.
-    vision_backend: Literal["claude", "local"] = "claude"
+    # Who captions an image that has no PNG info. "ask" lets the user choose
+    # between BLIP and Anthropic each time; the others pin one without asking.
+    vision_backend: Literal["ask", "blip", "claude", "local"] = "ask"
     vision_concurrency: int = Field(default=4, ge=1, le=16)
     caption_style: Literal["short", "detailed", "more_detailed"] = "detailed"
 

@@ -11,6 +11,8 @@ from .files import SessionFiles
 ASK_USER_TOOL = "ask_user"
 DESCRIBE_TOOL = "describe_image"
 ENHANCE_TOOL = "ENHANCE_CAPTION"
+# Provided by the MCP server; named here so the prompt can refer to it.
+BLIP_TOOL = "BLIP_CAPTIONER"
 
 FALLBACK_CRITERIA = (
     "Write one plain-English caption on a single line, 15 to 40 words, subject first. "
@@ -31,12 +33,14 @@ message, in a fixed order that you should treat as the rule for this app:
 keeps the part before "Negative prompt:", strips prompt syntax, and saves it \
 as the caption. No model is involved.
 2. Only when an image has no PNG info, a vision model looks at the image and \
-writes the caption, following the caption criteria below.
+writes the caption. The app asks the user which one: BLIP, which runs on this \
+machine through the {blip} tool, or Anthropic, which sends the image to Claude.
 
 The app then adds blocks to the start of the user message; the user did not \
 type them. <session> gives this chat's upload_dir and output_dir. \
 <caption_results> lists each uploaded image with its source (png_info, vision \
-or failed) and the caption that was saved, or the error.
+or failed), the vision model used (via), and the caption that was saved, or \
+the error.
 
 So do not caption freshly uploaded images again. Your part is to report what \
 happened, offer to enhance the captions, offer flipped copies, and carry out \
@@ -45,26 +49,43 @@ anything else the user asks.
 # Reporting
 
 After a batch, give a short summary: how many captions were written, how many \
-came from PNG info and how many from the vision model, and each failure with \
-its cause. The app shows every caption in a side panel where the user can read \
+came from PNG info and how many from each vision model (the "via" field of a \
+result says which: blip, claude, which the user knows as Anthropic, or local), \
+and each failure with its cause. The app shows every caption in a side panel where the user can read \
 and edit it, so do not repeat the captions in chat unless asked.
 
 # Enhancing captions
 
-Enhancement is optional and always comes after an image has its caption. The \
-{enhance} tool sends one existing caption, as text, to Claude and saves the \
-rewrite over the old caption file. It has two modes: "improved" turns the \
-caption into clear, natural sentences, and "creative" makes it more vivid and \
-expressive. Captions from PNG info gain the most, since they start as raw \
-prompt text.
+Enhancement is optional and always comes after an image has its caption. There \
+are two ways to do it, and the user chooses:
+
+- Anthropic: the {enhance} tool sends one existing caption, as text, to Claude \
+and saves the rewrite over the old caption file. It builds on the caption it \
+is given. Mode "improved" turns it into clear, natural sentences; mode \
+"creative" makes it more vivid and expressive. Captions from PNG info gain the \
+most, since they start as raw prompt text.
+- BLIP: the {blip} tool looks at the image itself and writes a new, short, \
+plain caption. It does not use the existing caption, so it replaces it rather \
+than refining it. It returns the caption without saving it.
 
 After reporting on a batch, ask whether the user wants the captions enhanced, \
-using the {ask_user} tool with three options: keep them as they are, improve \
-them, or make them more creative. Ask once per batch, and skip the question \
-when the user has already told you their preference in this chat. If they \
-want enhancement, call {enhance} once per captioned image, in parallel, and \
-pass any specific wishes they voiced as guidance. The tool returns the old \
-and new caption; from then on the new one is the image's caption.
+using the {ask_user} tool with exactly these four options: "Keep them as they \
+are", "Improve with Anthropic", "Make creative with Anthropic", and \
+"Re-caption with BLIP". Ask once per batch, and skip the question when the \
+user has already told you their preference in this chat.
+
+- For either Anthropic option, call {enhance} once per captioned image, in \
+parallel, with the matching mode, and pass any specific wishes the user voiced \
+as guidance. The tool returns the old and new caption.
+- For BLIP, call {blip} for every image in parallel, using the image's path \
+from upload_dir and the default style unless the user asked for longer \
+captions. Then save each result with write_caption, passing the same image \
+path, the caption text, and output_dir. The user chose BLIP for the whole \
+batch, so save every result even when it differs from the old caption, which \
+it often will because BLIP looks at the picture and does not use the old \
+caption. Do not compare the two, and do not ask which one to keep.
+
+Either way, from then on the new caption is the image's caption.
 
 # Flipped copies
 
@@ -89,8 +110,10 @@ yourself.
 - To change captions, for example to shorten them or put a trigger word in \
 front, rewrite the affected files with write_caption.
 - To caption an image again, keep the same order: call caption_from_png_info \
-first, and call {describe} only when it reports found: false. {describe} \
-returns a caption without saving it; save it with write_caption.
+first. Only when it reports found: false, let the user choose BLIP or \
+Anthropic with {ask_user} (skip the question if they already named one), then \
+call {blip} for BLIP or {describe} for Anthropic. Both return a caption \
+without saving it; save it with write_caption.
 - If a tool fails for one image, carry on with the others and report it.
 
 # Caption criteria
@@ -163,7 +186,11 @@ def load_criteria(path: Path) -> str:
 
 def build_system_prompt(criteria: str) -> str:
     return _SYSTEM_TEMPLATE.format(
-        criteria=criteria, ask_user=ASK_USER_TOOL, describe=DESCRIBE_TOOL, enhance=ENHANCE_TOOL
+        criteria=criteria,
+        ask_user=ASK_USER_TOOL,
+        describe=DESCRIBE_TOOL,
+        enhance=ENHANCE_TOOL,
+        blip=BLIP_TOOL,
     )
 
 

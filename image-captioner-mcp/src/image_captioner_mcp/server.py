@@ -18,7 +18,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from PIL import UnidentifiedImageError
 
 from . import imaging
-from .captioner import CaptionStyle, create_captioner
+from .captioner import Captioner, CaptionStyle, create_captioner
 from .config import ServerConfig
 from .service import CaptionService
 
@@ -29,9 +29,11 @@ Image captioning tools. Every path is relative to the server's allowed root \
 (absolute paths inside it also work); anything outside is rejected.
 
 Typical flow for one image: read_png_metadata to see whether the generator \
-embedded a prompt; if not, caption_image to describe it with the local model; \
-then write_caption to save "<image stem>.txt". flip_image creates a mirrored \
-copy, and mirror_caption swaps left/right wording so a caption fits that copy.
+embedded a prompt (caption_from_png_info captions from it directly); if not, \
+describe the image with a local model: caption_image (Florence-2) or \
+BLIP_CAPTIONER (BLIP); then write_caption to save "<image stem>.txt". \
+flip_image creates a mirrored copy, and mirror_caption swaps left/right \
+wording so a caption fits that copy.
 """
 
 DEFAULT_CRITERIA = """\
@@ -65,15 +67,18 @@ def create_server(service: CaptionService) -> MCPServer[None]:
 
     @asynccontextmanager
     async def lifespan(_server: MCPServer[None]) -> AsyncIterator[None]:
+        # Load in the background so the client handshake is not held up by a
+        # multi-second model load; the first caption call waits on the
+        # captioner's lock if loading is still in progress.
         if config.preload:
-            # Load in the background so the client handshake is not held up by
-            # a multi-second model load; the first caption call waits on the
-            # captioner's lock if loading is still in progress.
-            threading.Thread(target=_preload, args=(service,), daemon=True).start()
+            threading.Thread(target=_preload, args=(service.captioner,), daemon=True).start()
+        if config.preload_blip:
+            threading.Thread(target=_preload, args=(service.blip_captioner,), daemon=True).start()
         try:
             yield
         finally:
             service.captioner.unload()
+            service.blip_captioner.unload()
 
     server: MCPServer[None] = MCPServer("image-captioner", instructions=INSTRUCTIONS, lifespan=lifespan)
 
@@ -117,6 +122,18 @@ def create_server(service: CaptionService) -> MCPServer[None]:
         """
         with _tool_errors():
             return await anyio.to_thread.run_sync(service.caption_image, path, style)
+
+    @server.tool(name="BLIP_CAPTIONER")
+    async def blip_captioner(path: str, style: CaptionStyle = "short") -> dict[str, Any]:
+        """Caption an image with the BLIP model running on this machine.
+
+        BLIP looks at the image itself and writes a new, plain caption, so it
+        replaces an existing caption rather than building on it. `style`
+        controls length: short (one sentence), detailed, more_detailed. The
+        caption is returned and not saved; save it with write_caption.
+        """
+        with _tool_errors():
+            return await anyio.to_thread.run_sync(service.blip_caption, path, style)
 
     @server.tool()
     def write_caption(
@@ -208,11 +225,11 @@ def _load_criteria(config: ServerConfig) -> str:
     return DEFAULT_CRITERIA.strip()
 
 
-def _preload(service: CaptionService) -> None:
+def _preload(captioner: Captioner) -> None:
     try:
-        service.captioner.load()
+        captioner.load()
     except Exception:
-        logger.exception("Model preload failed; caption_image will report the error")
+        logger.exception("Preloading the %s model failed; its tool will report the error", captioner.name)
 
 
 def main() -> None:

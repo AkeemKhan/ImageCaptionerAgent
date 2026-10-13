@@ -23,14 +23,28 @@ runs before Claude is asked anything:
 1. **PNG info.** The server's `caption_from_png_info` script takes the embedded
    prompt up to `Negative prompt:`, strips prompt syntax, and saves
    `Image1.txt` in the chat's output folder. No model is used.
-2. **Claude, only if there is no PNG info.** The image is downscaled and sent
-   to Claude, which writes a caption that follows `config/caption_criteria.md`.
-   With `vision_backend: local`, the Florence-2 model does this step instead
-   and the image stays on your machine.
-3. **Optional enhancement.** Claude reports what happened and asks whether to
-   keep the captions, improve them, or make them more creative. If you choose
-   one of the last two, the `ENHANCE_CAPTION` tool sends each caption's text
-   (not the image) to Claude and saves the rewrite over the old caption.
+2. **You choose, only for images with no PNG info.** After step 1 the chat
+   stops and asks, with two buttons:
+   - **BLIP (local, images stay on this machine):** the `BLIP_CAPTIONER` tool
+     runs BLIP on your GPU.
+   - **Anthropic (Claude, images are sent to Anthropic):** the image is
+     downscaled and sent to Claude, which writes the caption following
+     `config/caption_criteria.md`.
+
+   Images that had PNG info are already captioned by then, and nothing is sent
+   anywhere until you answer. Your answer applies to every image waiting in
+   that batch. You can answer by typing "blip" or "anthropic" too, and you can
+   attach more images with your answer. To skip the question, set
+   `vision_backend` in `config/settings.yaml` to `blip`, `claude` or `local`.
+3. **Optional enhancement.** Claude reports what happened and asks which of
+   four things to do: keep the captions, **improve with Anthropic**, **make
+   creative with Anthropic**, or **re-caption with BLIP**.
+   - The two Anthropic choices call `ENHANCE_CAPTION`, which sends each
+     caption's text (not the image) to Claude and saves the rewrite. It builds
+     on the existing caption.
+   - Re-captioning with BLIP calls `BLIP_CAPTIONER` on each image and saves the
+     result over the old caption. BLIP looks at the picture and ignores the old
+     caption, so it replaces rather than refines.
 4. Claude then asks once whether you also want horizontally flipped copies. If you say yes, each copy is saved as
    `Image1_flipped.png` with a caption in which left and right are swapped.
 

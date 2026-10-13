@@ -25,7 +25,8 @@ def anyio_backend() -> str:
 def settings(tmp_path: Path) -> Settings:
     criteria = tmp_path / "criteria.md"
     criteria.write_text("- Keep captions under 20 words.", encoding="utf-8")
-    return Settings(data_dir=tmp_path / "data", criteria_file=criteria)
+    # Claude vision unless a test picks another backend; the shipped default is BLIP.
+    return Settings(data_dir=tmp_path / "data", criteria_file=criteria, vision_backend="claude")
 
 
 @pytest.fixture

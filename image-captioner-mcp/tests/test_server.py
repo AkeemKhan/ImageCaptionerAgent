@@ -33,6 +33,7 @@ async def test_lists_all_tools(service: CaptionService) -> None:
         "read_png_metadata",
         "caption_from_png_info",
         "caption_image",
+        "BLIP_CAPTIONER",
         "write_caption",
         "flip_image",
         "mirror_caption",

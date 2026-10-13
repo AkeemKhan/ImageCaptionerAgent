@@ -85,6 +85,7 @@ async def test_caption_and_flip_through_the_mcp_server(settings: Settings, store
     )
     assert pipeline_steps == [
         ("Image1.png", "caption_from_png_info", True),
+        ("Image2.png", "caption_from_png_info", True),  # tried first, found nothing
         ("Image2.png", "caption_with_vision", True),
     ]
     assert len(provider.vision_calls) == 1

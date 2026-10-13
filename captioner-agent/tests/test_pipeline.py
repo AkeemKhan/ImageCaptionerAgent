@@ -88,7 +88,12 @@ async def test_vision_is_used_only_after_png_info_is_missing(settings: Settings,
     call = provider.vision_calls[0]
     assert call["media_type"] == "image/jpeg" and call["image"].startswith(b"\xff\xd8")
     assert "Keep captions under 20 words." in call["instructions"]
-    assert events[1]["name"] == "caption_with_vision" and events[1]["ok"]
+    # Two separate steps in the UI: PNG info finds nothing, then the vision step captions it.
+    ends = [(e["name"], e["ok"], e["summary"]) for e in events if e["type"] == "tool_end"]
+    assert ends == [
+        ("caption_from_png_info", True, "No PNG info"),
+        ("caption_with_vision", True, "A red square."),
+    ]
     assert caption_results(provider)[0]["source"] == "vision"
 
 
@@ -122,10 +127,12 @@ async def test_vision_failure_is_reported_and_does_not_stop_the_batch(
     assert results[0] == {
         "image": f"{session.id}/uploads/a.png",
         "source": "failed",
+        "via": "claude",
         "error": "Rate limited.",
     }
     assert results[1]["source"] == "png_info"
-    assert sorted(e["ok"] for e in events if e["type"] == "tool_end") == [False, True]
+    # Both PNG info steps succeed; only the vision step for a.png fails.
+    assert sorted(e["ok"] for e in events if e["type"] == "tool_end") == [False, True, True]
     assert events[-1]["type"] == "done"
 
 
@@ -155,23 +162,102 @@ async def test_local_backend_uses_the_server_model_instead_of_claude(
     assert caption_results(provider)[0] == {
         "image": f"{session.id}/uploads/a.png",
         "source": "vision",
+        "via": "local",
         "caption": "a local caption",
     }
 
 
-async def test_claude_gets_describe_image_but_not_the_local_model_tools(
+async def test_blip_backend_calls_blip_captioner_only_when_there_is_no_png_info(
+    settings: Settings, store: SessionStore
+) -> None:
+    settings.vision_backend = "blip"
+    settings.caption_style = "short"
+    agent, provider, toolbox, session = build(settings, store, ["a.png", "b.png"])
+    toolbox.png_info["a.png"] = "prompt a"
+    toolbox.results["BLIP_CAPTIONER"] = ToolResult('{"caption": "a house on a field"}')
+
+    events = await run_turn(agent, session, ["a.png", "b.png"])
+
+    blip_calls = [args for name, args in toolbox.calls if name == "BLIP_CAPTIONER"]
+    assert blip_calls == [{"path": f"{session.id}/uploads/b.png", "style": "short"}]
+    assert provider.vision_calls == []
+    # Images run concurrently, so the order that matters is per image: PNG info
+    # is tried first for b.png, and only then is BLIP called for it.
+    b = f"{session.id}/uploads/b.png"
+    b_calls = [name for name, args in toolbox.calls if b in args.values()]
+    assert b_calls == ["caption_from_png_info", "BLIP_CAPTIONER", "write_caption"]
+    assert [name for name, args in toolbox.calls if f"{session.id}/uploads/a.png" in args.values()] == [
+        "caption_from_png_info"
+    ]
+    assert [(r["source"], r["caption"]) for r in caption_results(provider)] == [
+        ("png_info", "prompt a"),
+        ("vision", "a house on a field"),
+    ]
+    assert [e["name"] for e in events if e["type"] == "tool_end"].count("BLIP_CAPTIONER") == 1
+
+
+async def test_blip_failure_is_reported_for_that_image_only(settings: Settings, store: SessionStore) -> None:
+    settings.vision_backend = "blip"
+    agent, provider, toolbox, session = build(settings, store, ["a.png"])
+    toolbox.results["BLIP_CAPTIONER"] = ToolResult("the file is not a readable image", is_error=True)
+
+    await run_turn(agent, session, ["a.png"])
+
+    assert caption_results(provider)[0]["source"] == "failed"
+    assert "write_caption" not in [name for name, _ in toolbox.calls]
+
+
+def test_asking_the_user_is_the_shipped_default_and_each_backend_can_be_pinned() -> None:
+    assert Settings().vision_backend == "ask"
+    pinned = {Settings(vision_backend=b).vision_backend for b in ("ask", "blip", "claude", "local")}
+    assert pinned == {"ask", "blip", "claude", "local"}
+
+
+async def test_claude_gets_blip_captioner_but_not_the_other_local_model_tools(
     settings: Settings, store: SessionStore
 ) -> None:
     agent, provider, toolbox, session = build(settings, store, [])
     toolbox.definitions = lambda: [  # type: ignore[method-assign]
         {"name": name, "description": "", "input_schema": {"type": "object"}}
-        for name in ("caption_from_png_info", "caption_image", "caption_folder", "write_caption")
+        for name in (
+            "caption_from_png_info",
+            "caption_image",
+            "caption_folder",
+            "BLIP_CAPTIONER",
+            "write_caption",
+        )
     ]
 
     await run_turn(agent, session, [])
 
     names = [tool["name"] for tool in provider.requests[0]["tools"]]
-    assert names == ["caption_from_png_info", "write_caption", DESCRIBE_TOOL, "ENHANCE_CAPTION", "ask_user"]
+    assert names == [
+        "caption_from_png_info",
+        "BLIP_CAPTIONER",
+        "write_caption",
+        DESCRIBE_TOOL,
+        "ENHANCE_CAPTION",
+        "ask_user",
+    ]
+
+
+async def test_system_prompt_offers_anthropic_and_blip_enhancement(
+    settings: Settings, store: SessionStore
+) -> None:
+    agent, provider, _, session = build(settings, store, [])
+
+    await run_turn(agent, session, [])
+
+    system: str = provider.requests[0]["system"]
+    enhancing = system.split("# Enhancing captions")[1].split("# Flipped copies")[0]
+    for option in (
+        "Keep them as they are",
+        "Improve with Anthropic",
+        "Make creative with Anthropic",
+        "Re-caption with BLIP",
+    ):
+        assert option in enhancing
+    assert "BLIP_CAPTIONER" in enhancing and "ENHANCE_CAPTION" in enhancing
 
 
 async def test_describe_image_tool_is_confined_to_the_session(

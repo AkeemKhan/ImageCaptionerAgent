@@ -4,10 +4,12 @@ For every image, in this order:
 
 1. PNG info: the server's ``caption_from_png_info`` script writes the caption
    from the embedded prompt. No model is involved.
-2. Only if the image has no PNG info: a vision model looks at the image and
-   writes the caption (Claude by default, the local model if configured).
+2. Only for images with no PNG info: a vision model looks at the image and
+   writes the caption. Which one is the user's choice, BLIP (local) or
+   Anthropic (Claude), unless the settings pin one.
 
-The order is enforced here in code, not left to the chat model to follow.
+The order is enforced here in code, not left to the chat model to follow. The
+two stages are separate methods so the app can ask the user between them.
 """
 
 from __future__ import annotations
@@ -22,17 +24,27 @@ from typing import Any, Literal
 
 from .files import FileKind, InvalidFileError, SessionFiles, encode_for_vision
 from .llm import LLMError, LLMProvider
-from .prompts import build_enhance_prompt, build_vision_prompt, load_criteria
+from .prompts import BLIP_TOOL, build_enhance_prompt, build_vision_prompt, load_criteria
 from .settings import Settings
 from .toolbox import Toolbox
 
 logger = logging.getLogger(__name__)
 
 PNG_INFO_TOOL = "caption_from_png_info"
-# Shown in the UI for step 2; not a server tool.
-VISION_STEP = "caption_with_vision"
+
+Backend = Literal["blip", "claude", "local"]
+# Vision backends that run as tools on the MCP server. "claude" is not one:
+# it sends the image to the Anthropic API from the agent itself.
+SERVER_VISION_TOOLS = {"blip": BLIP_TOOL, "local": "caption_image"}
+# The step name shown in the UI for each backend.
+VISION_STEPS = {"blip": BLIP_TOOL, "claude": "caption_with_vision", "local": "caption_image"}
+
+# The two buttons the user picks between. parse_backend_choice reads them back.
+BLIP_OPTION = "BLIP (local, images stay on this machine)"
+ANTHROPIC_OPTION = "Anthropic (Claude, images are sent to Anthropic)"
 
 Event = dict[str, Any]
+_SOURCES = ("png_info", "vision", "failed")
 
 
 @dataclass(frozen=True)
@@ -43,14 +55,55 @@ class CaptionOutcome:
     source: Literal["png_info", "vision", "failed"]
     caption: str | None = None
     error: str | None = None
+    # Which vision backend was used (blip, claude or local); None for PNG info.
+    via: str | None = None
 
     def to_dict(self) -> dict[str, str]:
         data = {"image": self.image, "source": self.source}
+        if self.via is not None:
+            data["via"] = self.via
         if self.caption is not None:
             data["caption"] = self.caption
         if self.error is not None:
             data["error"] = self.error
         return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> CaptionOutcome:
+        source = data.get("source")
+        return cls(
+            image=str(data["image"]),
+            source=source if source in _SOURCES else "failed",
+            caption=data.get("caption"),
+            error=data.get("error"),
+            via=data.get("via"),
+        )
+
+
+def parse_backend_choice(answer: str) -> Literal["blip", "claude"] | None:
+    """Read the user's reply to the BLIP-or-Anthropic question.
+
+    Accepts a button label or free text. Returns ``None`` if the reply names
+    neither backend, or names both, so the question is asked again.
+    """
+    text = answer.lower()
+    wants_blip = "blip" in text
+    wants_anthropic = "anthropic" in text or "claude" in text
+    if wants_blip == wants_anthropic:
+        return None
+    return "blip" if wants_blip else "claude"
+
+
+def vision_question(names: list[str]) -> dict[str, Any]:
+    """The choice shown to the user when images have no PNG info."""
+    count = len(names)
+    shown = ", ".join(names[:3]) + (f" and {count - 3} more" if count > 3 else "")
+    noun = "image has" if count == 1 else "images have"
+    return {
+        "id": f"vision_{uuid.uuid4().hex[:12]}",
+        "question": f"{count} {noun} no PNG info ({shown}). Which should caption them?",
+        "options": [BLIP_OPTION, ANTHROPIC_OPTION],
+    }
 
 
 class CaptionPipeline:
@@ -59,64 +112,96 @@ class CaptionPipeline:
         self._toolbox = toolbox
         self._settings = settings
 
-    async def run(
-        self, files: SessionFiles, uploaded: list[str], outcomes: list[CaptionOutcome]
+    async def png_stage(
+        self, files: SessionFiles, names: list[str], results: dict[str, CaptionOutcome]
     ) -> AsyncIterator[Event]:
-        """Caption ``uploaded`` images, yielding UI events and filling ``outcomes`` in upload order."""
-        limit = asyncio.Semaphore(self._settings.vision_concurrency)
-        step_ids = {name: f"auto_{uuid.uuid4().hex[:12]}" for name in uploaded}
-        for name in uploaded:
+        """Step 1: caption each image from its PNG info, if it has any.
+
+        Fills ``results`` for images that were captioned or failed. An image
+        with no PNG info is left out of ``results``: it is for step 2.
+        """
+        step_ids = {name: f"auto_{uuid.uuid4().hex[:12]}" for name in names}
+        for name in names:
             yield _event("tool_start", step_ids[name], PNG_INFO_TOOL, files.tool_path("uploads", name))
 
-        async def caption_one(name: str) -> tuple[str, str, CaptionOutcome]:
-            async with limit:
-                step, outcome = await self._caption_one(files, name)
-            return name, step, outcome
+        async def one(name: str) -> tuple[str, CaptionOutcome | None]:
+            return name, await self._png_info(files, name)
 
-        finished: dict[str, CaptionOutcome] = {}
-        for task in asyncio.as_completed([caption_one(name) for name in uploaded]):
-            name, step, outcome = await task
-            finished[name] = outcome
+        for task in asyncio.as_completed([one(name) for name in names]):
+            name, outcome = await task
+            if outcome is not None:
+                results[name] = outcome
             yield {
-                **_event("tool_end", step_ids[name], step, outcome.image),
+                **_event("tool_end", step_ids[name], PNG_INFO_TOOL, files.tool_path("uploads", name)),
+                "ok": outcome is None or outcome.source != "failed",
+                "summary": (outcome.caption or outcome.error or "") if outcome else "No PNG info",
+            }
+
+    async def vision_stage(
+        self,
+        files: SessionFiles,
+        names: list[str],
+        backend: Backend,
+        results: dict[str, CaptionOutcome],
+    ) -> AsyncIterator[Event]:
+        """Step 2: caption images that have no PNG info with ``backend``."""
+        limit = asyncio.Semaphore(self._settings.vision_concurrency)
+        step = VISION_STEPS[backend]
+        step_ids = {name: f"auto_{uuid.uuid4().hex[:12]}" for name in names}
+        for name in names:
+            yield _event("tool_start", step_ids[name], step, files.tool_path("uploads", name))
+
+        async def one(name: str) -> tuple[str, CaptionOutcome]:
+            async with limit:
+                return name, await self._vision_one(files, name, backend)
+
+        for task in asyncio.as_completed([one(name) for name in names]):
+            name, outcome = await task
+            results[name] = outcome
+            yield {
+                **_event("tool_end", step_ids[name], step, files.tool_path("uploads", name)),
                 "ok": outcome.source != "failed",
                 "summary": outcome.caption or outcome.error or "",
             }
-        outcomes.extend(finished[name] for name in uploaded)
 
-    async def _caption_one(self, files: SessionFiles, name: str) -> tuple[str, CaptionOutcome]:
-        """Returns the step that produced the result and the outcome."""
+    async def _png_info(self, files: SessionFiles, name: str) -> CaptionOutcome | None:
         image = files.tool_path("uploads", name)
-        output_dir = files.tool_path("outputs")
-
-        result = await self._toolbox.call(PNG_INFO_TOOL, {"path": image, "output_dir": output_dir})
+        result = await self._toolbox.call(
+            PNG_INFO_TOOL, {"path": image, "output_dir": files.tool_path("outputs")}
+        )
         if result.is_error:
-            return PNG_INFO_TOOL, CaptionOutcome(image, "failed", error=result.text)
+            return CaptionOutcome(image, "failed", error=result.text)
         info = _parse_json(result.text)
         if info.get("found"):
-            return PNG_INFO_TOOL, CaptionOutcome(image, "png_info", caption=str(info.get("caption", "")))
+            return CaptionOutcome(image, "png_info", caption=str(info.get("caption", "")))
+        return None
 
+    async def _vision_one(self, files: SessionFiles, name: str, backend: Backend) -> CaptionOutcome:
+        image = files.tool_path("uploads", name)
         try:
-            caption = await self.describe(files, "uploads", name)
+            caption = await self.describe(files, "uploads", name, backend)
         except (LLMError, InvalidFileError, OSError) as exc:
-            return VISION_STEP, CaptionOutcome(image, "failed", error=str(exc))
+            return CaptionOutcome(image, "failed", error=str(exc), via=backend)
         saved = await self._toolbox.call(
-            "write_caption", {"image_path": image, "text": caption, "output_dir": output_dir}
+            "write_caption",
+            {"image_path": image, "text": caption, "output_dir": files.tool_path("outputs")},
         )
         if saved.is_error:
-            return VISION_STEP, CaptionOutcome(image, "failed", error=saved.text)
-        return VISION_STEP, CaptionOutcome(image, "vision", caption=caption)
+            return CaptionOutcome(image, "failed", error=saved.text, via=backend)
+        return CaptionOutcome(image, "vision", caption=caption, via=backend)
 
-    async def describe(self, files: SessionFiles, kind: FileKind, name: str) -> str:
-        """Caption one image by looking at it, with the configured vision backend."""
+    async def describe(self, files: SessionFiles, kind: FileKind, name: str, backend: Backend) -> str:
+        """Caption one image by looking at it with ``backend``. The caption is not saved."""
         path = files.resolve(kind, name)
-        if self._settings.vision_backend == "local":
+        server_tool = SERVER_VISION_TOOLS.get(backend)
+        if server_tool is not None:
             result = await self._toolbox.call(
-                "caption_image", {"path": files.tool_path(kind, name), "style": self._settings.caption_style}
+                server_tool, {"path": files.tool_path(kind, name), "style": self._settings.caption_style}
             )
             if result.is_error:
                 raise LLMError(result.text)
-            return str(_parse_json(result.text).get("caption", "")).strip() or _no_caption()
+            caption = str(_parse_json(result.text).get("caption", "")).strip()
+            return " ".join(caption.split()) or _no_caption()
         data, media_type = await asyncio.to_thread(encode_for_vision, path)
         instructions = build_vision_prompt(load_criteria(self._settings.criteria_file))
         caption = await self._provider.caption_image(

@@ -13,7 +13,13 @@ import jsonschema
 
 from .files import FileKind, InvalidFileError, SessionFiles
 from .llm import LLMError, LLMProvider, TurnResult
-from .pipeline import CaptionOutcome, CaptionPipeline
+from .pipeline import (
+    Backend,
+    CaptionOutcome,
+    CaptionPipeline,
+    parse_backend_choice,
+    vision_question,
+)
 from .prompts import (
     ASK_USER_TOOL,
     DESCRIBE_TOOL,
@@ -39,9 +45,10 @@ HIDDEN_SERVER_TOOLS = frozenset({"caption_image", "caption_folder"})
 DESCRIBE_DEFINITION: dict[str, Any] = {
     "name": DESCRIBE_TOOL,
     "description": (
-        "Have the vision model look at one image from this chat and write its caption, "
-        "following the caption criteria. Returns the caption text and does not save it. "
-        "Use it only for an image that caption_from_png_info reported as found: false."
+        "Send one image from this chat to Anthropic (Claude) and get a caption written "
+        "from looking at it, following the caption criteria. The image leaves this "
+        "machine. Returns the caption text and does not save it. Use it only when the "
+        "user has chosen Anthropic to caption an image that has no PNG info."
     ),
     "input_schema": {
         "type": "object",
@@ -143,19 +150,63 @@ class CaptionAgent:
     async def run(self, session: Session, text: str, uploaded: list[str]) -> AsyncIterator[Event]:
         """Handle a user message, yielding UI events as the turn progresses.
 
-        Uploaded images are captioned by the fixed pipeline (PNG info, then
-        vision) before Claude is asked anything; Claude receives the results.
+        Uploaded images are captioned by the fixed pipeline before Claude is
+        asked anything; Claude receives the results. The pipeline has two steps:
+        PNG info for every image, then a vision model for the images without
+        any. If there are such images and the settings do not pin a backend, the
+        turn pauses to ask the user to choose BLIP or Anthropic, and the user's
+        next message answers that question and resumes the pipeline.
         """
         files = SessionFiles(self._settings.sessions_dir, session.id)
         messages = copy.deepcopy(session.messages)
         transcript: list[Event] = [{"type": "user", "text": text, "files": uploaded}]
 
-        outcomes: list[CaptionOutcome] = []
-        async for event in self._pipeline.run(files, uploaded, outcomes):
-            if event["type"] == "tool_end":
-                transcript.append({**event, "type": "tool"})
-            yield event
-        messages.append(self._user_turn(session, files, text, [o.to_dict() for o in outcomes]))
+        waiting = session.pending if (session.pending or {}).get("kind") == "vision" else None
+        ask_pending = None if waiting else session.pending
+        outcomes: dict[str, CaptionOutcome] = {}
+        order = list(uploaded)
+        missing: list[str] = []
+        user_text = text
+        chosen: Backend | None = None
+        if waiting is not None:
+            outcomes = {n: CaptionOutcome.from_dict(d) for n, d in waiting["results"].items()}
+            order = [*waiting["order"], *uploaded]
+            missing = list(waiting["missing"])
+            user_text = waiting["text"]
+            chosen = parse_backend_choice(text)
+        elif self._settings.vision_backend != "ask":
+            chosen = self._settings.vision_backend
+
+        if uploaded:
+            async for event in self._png_step(files, uploaded, outcomes, missing, transcript):
+                yield event
+
+        if missing and chosen is None:
+            vision_ask = vision_question(missing)
+            transcript.append({"type": "choice", **vision_ask})
+            session.transcript.extend(transcript)
+            session.pending = {
+                "kind": "vision",
+                "order": order,
+                "missing": missing,
+                "results": {n: o.to_dict() for n, o in outcomes.items()},
+                "text": user_text,
+                "choice": vision_ask,
+            }
+            session.title = session.title or make_title(user_text, len(order))
+            self._store.save(session)
+            yield {"type": "choice", **vision_ask}
+            yield {"type": "done", "title": session.title}
+            return
+
+        if missing and chosen is not None:
+            async for event in self._pipeline.vision_stage(files, missing, chosen, outcomes):
+                if event["type"] == "tool_end":
+                    transcript.append({**event, "type": "tool"})
+                yield event
+
+        ordered = [outcomes[name].to_dict() for name in order if name in outcomes]
+        messages.append(self._user_turn(ask_pending, files, user_text, ordered))
         pending: dict[str, Any] | None = None
 
         tools = [
@@ -223,21 +274,39 @@ class CaptionAgent:
         session.messages = messages
         session.transcript.extend(transcript)
         session.pending = pending
-        if not session.title:
-            session.title = make_title(text, len(uploaded))
+        session.title = session.title or make_title(user_text, len(order))
         self._store.save(session)
         yield {"type": "done", "title": session.title}
 
+    async def _png_step(
+        self,
+        files: SessionFiles,
+        uploaded: list[str],
+        results: dict[str, CaptionOutcome],
+        missing: list[str],
+        transcript: list[Event],
+    ) -> AsyncIterator[Event]:
+        """Run step 1 for ``uploaded``; images with no PNG info are added to ``missing``."""
+        async for event in self._pipeline.png_stage(files, uploaded, results):
+            if event["type"] == "tool_end":
+                transcript.append({**event, "type": "tool"})
+            yield event
+        missing.extend(name for name in uploaded if name not in results)
+
     def _user_turn(
-        self, session: Session, files: SessionFiles, text: str, results: list[dict[str, Any]]
+        self,
+        ask_pending: dict[str, Any] | None,
+        files: SessionFiles,
+        text: str,
+        results: list[dict[str, Any]],
     ) -> dict[str, Any]:
-        """Build the user message; if a question was pending, the text answers it."""
-        if session.pending is None:
+        """Build the user message; if Claude's question was pending, the text answers it."""
+        if ask_pending is None:
             return {"role": "user", "content": build_user_message(files, text, results)}
         answer = text.strip() or "(no answer)"
         content: list[dict[str, Any]] = [
-            *session.pending["results"],
-            {"type": "tool_result", "tool_use_id": session.pending["tool_use_id"], "content": answer},
+            *ask_pending["results"],
+            {"type": "tool_result", "tool_use_id": ask_pending["tool_use_id"], "content": answer},
         ]
         if results:
             content.append({"type": "text", "text": build_user_message(files, "", results)})
@@ -268,7 +337,7 @@ class CaptionAgent:
         name = parts[-1]
         try:
             if block["name"] == DESCRIBE_TOOL:
-                return ToolResult(await self._pipeline.describe(files, kind, name))
+                return ToolResult(await self._pipeline.describe(files, kind, name, "claude"))
             enhanced = await self._pipeline.enhance(
                 files, kind, name, tool_input.get("mode", "improved"), tool_input.get("guidance", "")
             )

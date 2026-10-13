@@ -78,9 +78,11 @@ class McpToolbox:
             for key, value in os.environ.items()
             if not key.upper().startswith(_WITHHELD_ENV_PREFIXES)
         }
-        if self._settings.vision_backend == "claude":
-            # The local model is not used, so do not load it into VRAM at startup.
-            env["CAPTIONER_PRELOAD"] = "false"
+        # Load into VRAM at startup only the model that captions images without
+        # PNG info. The other loads on first use, if the user ever asks for it.
+        backend = self._settings.vision_backend
+        env["CAPTIONER_PRELOAD"] = str(backend == "local").lower()
+        env["CAPTIONER_PRELOAD_BLIP"] = str(backend in ("ask", "blip")).lower()
         env.update(mcp.env)
         env["CAPTIONER_ALLOWED_ROOT"] = str(self._settings.sessions_dir)
         env["CAPTIONER_CRITERIA_FILE"] = str(self._settings.criteria_file)

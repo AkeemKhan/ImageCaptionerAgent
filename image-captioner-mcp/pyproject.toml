@@ -27,6 +27,7 @@ dev = ["pytest>=8", "ruff>=0.6", "mypy>=1.10"]
 [project.scripts]
 image-captioner-mcp = "image_captioner_mcp.server:main"
 png-info-caption = "image_captioner_mcp.png_caption:main"
+captioner-download-models = "image_captioner_mcp.download:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/image_captioner_mcp"]

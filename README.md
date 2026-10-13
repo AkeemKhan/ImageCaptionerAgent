@@ -8,9 +8,12 @@ Images are captioned in a fixed order, enforced in code:
 1. **PNG info first.** A Python script reads the generation prompt embedded in
    the image, keeps everything before `Negative prompt:`, and strips prompt
    syntax such as `( ) : < >` and LoRA tags. No model is involved.
-2. **Claude only when there is no PNG info.** Claude looks at the image and
-   writes the caption, following your own rules.
+2. **You choose, only when there is no PNG info.** The chat asks whether to
+   caption those images with **BLIP** (the `BLIP_CAPTIONER` tool, on your GPU,
+   images stay on your machine) or **Anthropic** (the image is sent to Claude).
 
+Afterwards you can choose to enhance the captions with Anthropic (improved or
+more creative, built on the existing caption) or to re-caption them with BLIP.
 On request, it also makes mirrored copies with matching captions.
 
 It is built as two applications that talk over the
@@ -33,11 +36,11 @@ It is built as two applications that talk over the
 | [captioner-agent](captioner-agent) | The web chat app and the Claude agent loop. |
 | [image-captioner-mcp](image-captioner-mcp) | A standalone MCP server with the image tools and the local model. Also works from Claude Desktop. |
 
-**Privacy:** an image with PNG info never leaves your machine. An image
-without it is downscaled and sent to the Anthropic API so Claude can see it.
-To keep every image local, set `vision_backend: local` in
-[settings.yaml](captioner-agent/config/settings.yaml); the Florence-2 model on
-your GPU then does step 2.
+**Privacy:** an image is sent to Anthropic only if you pick Anthropic when the
+chat asks how to caption images that have no PNG info (or if you pin
+`vision_backend: claude` in [settings.yaml](captioner-agent/config/settings.yaml)).
+Choose BLIP and it never leaves your machine. Enhancing with Anthropic sends
+only the text of a caption, never the image.
 
 The PNG info script also runs on its own, with no API key:
 
@@ -49,8 +52,9 @@ The PNG info script also runs on its own, with no API key:
 
 - Python 3.10 or newer.
 - An Anthropic API key.
-- Only for `vision_backend: local`: an NVIDIA GPU with about 3 GB of free VRAM
-  for Florence-2 large. Without one the model runs on the CPU, which is slower.
+- About 2 GB of disk for the BLIP model, and an NVIDIA GPU with about 3 GB of
+  free VRAM (BLIP itself uses about 1 GB). Without a GPU the model runs on the
+  CPU, which is slower.
 
 ## Setup (Windows PowerShell)
 
@@ -59,6 +63,13 @@ python -m venv .venv
 .\.venv\Scripts\python.exe -m pip install torch torchvision --index-url https://download.pytorch.org/whl/cu124
 .\.venv\Scripts\python.exe -m pip install -e ".\image-captioner-mcp[florence,dev]" -e ".\captioner-agent[dev]"
 Copy-Item .env.example .env      # then put your API key in .env
+```
+
+Download the BLIP model once, so the first caption does not stall on a 1.9 GB
+download:
+
+```powershell
+.\.venv\Scripts\captioner-download-models.exe
 ```
 
 ## Run

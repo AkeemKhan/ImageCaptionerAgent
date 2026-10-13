@@ -20,13 +20,17 @@ data_dir: data
 criteria_file: config/caption_criteria.md
 
 # Captioning order is fixed: PNG info first, then a vision model only for
-# images that have no PNG info. This picks that vision model:
-#   claude: the image is sent to Claude through the Anthropic API.
-#   local:  Florence-2 on your GPU; the image stays on this machine.
-vision_backend: claude
+# images that have no PNG info. Who that vision model is:
+#   ask:    the chat asks you each time, BLIP or Anthropic (recommended).
+#   blip:   always BLIP on your GPU; the image stays on this machine.
+#   claude: always Claude through the Anthropic API; the image is sent to Anthropic.
+#   local:  always Florence-2 on your GPU; the image stays on this machine.
+# The last three never ask. Whichever you use, after captioning the chat offers
+# to enhance the captions with Anthropic or to re-caption them with BLIP.
+vision_backend: ask
 # How many images are captioned at the same time.
 vision_concurrency: 4
-# Caption length when vision_backend is local: short | detailed | more_detailed
+# Caption length when vision_backend is blip or local: short | detailed | more_detailed
 caption_style: detailed
 
 # The image-captioner MCP server.
