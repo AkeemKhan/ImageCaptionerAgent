@@ -26,6 +26,10 @@ class Settings(BaseModel):
     effort: Literal["low", "medium", "high", "xhigh", "max"] = "medium"
     max_tokens: int = 32000
     refusal_fallbacks: bool = True
+    # A small model decides whether a message that comes with images is a
+    # request to caption them by hand. Turn off to always caption automatically.
+    detect_manual_captioning: bool = True
+    router_model: str = "claude-haiku-5-5"
 
     host: str = "127.0.0.1"
     port: int = 8000

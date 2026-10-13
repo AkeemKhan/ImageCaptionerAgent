@@ -17,8 +17,20 @@ Then open <http://127.0.0.1:8000>.
 
 ## What happens to an image
 
-The order is fixed in code ([pipeline.py](src/captioner_agent/pipeline.py)) and
-runs before Claude is asked anything:
+**Manual captioning comes first.** If your message comes with images and says
+you are writing the captions yourself ("image1 is a red car, image2 is a blue
+boat", "caption these as: sks dog running", or just "I'll caption these
+manually"), the steps below are skipped, even for images that have PNG info.
+Claude saves your text with the `MANUAL_CAPTION` tool exactly as you wrote it,
+keeping syntax such as `(word:1.2)` and trigger words. If you said you would
+write them but gave none, Claude asks, and you can send them in your next
+message. The check is made by a small model (`router_model`, Haiku by default)
+on messages that have both images and text; set `detect_manual_captioning:
+false` to turn it off. You can also ask for manual captions later, for images
+already in the chat.
+
+Otherwise, the order is fixed in code ([pipeline.py](src/captioner_agent/pipeline.py))
+and runs before Claude is asked anything:
 
 1. **PNG info.** The server's `caption_from_png_info` script takes the embedded
    prompt up to `Negative prompt:`, strips prompt syntax, and saves
@@ -76,6 +88,7 @@ URL for the outputs alone.
 |---|---|
 | `app.py` | FastAPI routes: chats, uploads, streaming messages, captions, ZIP. |
 | `pipeline.py` | The fixed captioning order: PNG info, then vision. |
+| `llm.py` | Also holds the manual-captioning check (`wants_manual_captioning`). |
 | `agent.py` | The agent loop: model call, tool calls, questions to the user, persistence. |
 | `llm.py` | `LLMProvider` interface and the Claude implementation. |
 | `toolbox.py` | MCP client that exposes the server's tools to Claude. |

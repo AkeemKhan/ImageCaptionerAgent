@@ -70,8 +70,16 @@ class FakeProvider:
     requests: list[dict[str, Any]] = field(default_factory=list)
     vision_caption: str | Exception = "a vision caption"
     vision_calls: list[dict[str, Any]] = field(default_factory=list)
+    manual_intent: bool | Exception = False
+    router_calls: list[dict[str, Any]] = field(default_factory=list)
     enhanced_caption: str | Exception = "An enhanced caption."
     enhance_calls: list[dict[str, Any]] = field(default_factory=list)
+
+    async def wants_manual_captioning(self, *, text: str, instructions: str) -> bool:
+        self.router_calls.append({"text": text, "instructions": instructions})
+        if isinstance(self.manual_intent, Exception):
+            raise self.manual_intent
+        return self.manual_intent
 
     async def enhance_caption(self, *, caption: str, instructions: str) -> str:
         self.enhance_calls.append({"caption": caption, "instructions": instructions})

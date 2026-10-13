@@ -9,6 +9,14 @@ max_tokens: 32000
 # fallback model instead of stopping.
 refusal_fallbacks: true
 
+# Manual captioning: when a message comes with images, a small model checks
+# whether you are writing the captions yourself ("image1 is a red car") or asking
+# to. If so, the automatic steps are skipped and your captions are saved as
+# written by the MANUAL_CAPTION tool. This is one cheap extra request per message
+# that has both images and text; turn it off to always caption automatically.
+detect_manual_captioning: true
+router_model: claude-haiku-5-5
+
 # Web server.
 host: 127.0.0.1
 port: 8000

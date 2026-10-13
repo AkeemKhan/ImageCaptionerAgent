@@ -16,6 +16,8 @@ from .settings import Settings
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 # Room for the model's reasoning plus a caption of a few sentences.
 CAPTION_MAX_TOKENS = 4000
+# One word is the answer; the rest is room for the model's brief reasoning.
+ROUTER_MAX_TOKENS = 1500
 
 
 class LLMError(Exception):
@@ -44,6 +46,10 @@ class LLMProvider(Protocol):
 
     async def enhance_caption(self, *, caption: str, instructions: str) -> str:
         """Rewrite an existing caption, following ``instructions``. Text only; no image is sent."""
+        ...
+
+    async def wants_manual_captioning(self, *, text: str, instructions: str) -> bool:
+        """Whether ``text`` asks to caption images by hand, or supplies the captions itself."""
         ...
 
 
@@ -107,6 +113,26 @@ class AnthropicProvider:
 
     async def enhance_caption(self, *, caption: str, instructions: str) -> str:
         return await self._caption_reply(instructions, [{"role": "user", "content": caption}])
+
+    async def wants_manual_captioning(self, *, text: str, instructions: str) -> bool:
+        """Classify a message with a small, cheap model. Any doubt counts as "no".
+
+        A wrong "no" only means the automatic pipeline runs, which asks before
+        sending anything anywhere; a wrong "yes" would skip captioning the user
+        wanted. So errors, cut-off replies and anything unclear return False.
+        """
+        with self._api_errors():
+            message = await self._client.messages.create(
+                model=self._settings.router_model,
+                max_tokens=ROUTER_MAX_TOKENS,
+                system=instructions,
+                messages=[{"role": "user", "content": text}],
+                output_config={"effort": "low"},
+            )
+        if message.stop_reason != "end_turn":
+            return False
+        reply = "".join(block.text for block in message.content if block.type == "text")
+        return reply.strip().lower().startswith("manual")
 
     async def _caption_reply(self, instructions: str, messages: list[Any]) -> str:
         """One short request whose whole reply is a caption."""

@@ -11,6 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
     "mcp>=1.10",
     "pillow>=10.0",
+    "pydantic>=2.7",
 ]
 
 [project.optional-dependencies]

@@ -25,6 +25,7 @@ from .prompts import (
     DESCRIBE_TOOL,
     ENHANCE_MODES,
     ENHANCE_TOOL,
+    build_manual_router_prompt,
     build_system_prompt,
     build_user_message,
     load_criteria,
@@ -163,6 +164,13 @@ class CaptionAgent:
 
         waiting = session.pending if (session.pending or {}).get("kind") == "vision" else None
         ask_pending = None if waiting else session.pending
+
+        # Manual captioning is decided first, before any automatic captioning.
+        manual = await self._wants_manual(text, uploaded, resuming=waiting is not None)
+        if manual:
+            note = "Manual captioning: the automatic captioning steps were skipped."
+            transcript.append({"type": "notice", "text": note})
+            yield {"type": "notice", "text": note}
         outcomes: dict[str, CaptionOutcome] = {}
         order = list(uploaded)
         missing: list[str] = []
@@ -177,7 +185,7 @@ class CaptionAgent:
         elif self._settings.vision_backend != "ask":
             chosen = self._settings.vision_backend
 
-        if uploaded:
+        if uploaded and not manual:
             async for event in self._png_step(files, uploaded, outcomes, missing, transcript):
                 yield event
 
@@ -206,7 +214,7 @@ class CaptionAgent:
                 yield event
 
         ordered = [outcomes[name].to_dict() for name in order if name in outcomes]
-        messages.append(self._user_turn(ask_pending, files, user_text, ordered))
+        messages.append(self._user_turn(ask_pending, files, user_text, ordered, uploaded if manual else None))
         pending: dict[str, Any] | None = None
 
         tools = [
@@ -293,23 +301,43 @@ class CaptionAgent:
             yield event
         missing.extend(name for name in uploaded if name not in results)
 
+    async def _wants_manual(self, text: str, uploaded: list[str], resuming: bool) -> bool:
+        """Whether this message asks to caption its images by hand.
+
+        Only a message that brings images and also says something can be a
+        manual request. A reply to the BLIP-or-Anthropic question is not one, and
+        a message without images goes to Claude, which has the MANUAL_CAPTION tool.
+        """
+        if resuming or not uploaded or not text.strip() or not self._settings.detect_manual_captioning:
+            return False
+        try:
+            return await self._provider.wants_manual_captioning(
+                text=text, instructions=build_manual_router_prompt()
+            )
+        except LLMError as exc:
+            # The pipeline will surface a real API problem itself; a failed check
+            # just means "caption automatically".
+            logger.warning("Manual-captioning check failed (%s); captioning automatically", exc)
+            return False
+
     def _user_turn(
         self,
         ask_pending: dict[str, Any] | None,
         files: SessionFiles,
         text: str,
         results: list[dict[str, Any]],
+        manual: list[str] | None = None,
     ) -> dict[str, Any]:
         """Build the user message; if Claude's question was pending, the text answers it."""
         if ask_pending is None:
-            return {"role": "user", "content": build_user_message(files, text, results)}
+            return {"role": "user", "content": build_user_message(files, text, results, manual)}
         answer = text.strip() or "(no answer)"
         content: list[dict[str, Any]] = [
             *ask_pending["results"],
             {"type": "tool_result", "tool_use_id": ask_pending["tool_use_id"], "content": answer},
         ]
-        if results:
-            content.append({"type": "text", "text": build_user_message(files, "", results)})
+        if results or manual:
+            content.append({"type": "text", "text": build_user_message(files, "", results, manual)})
         return {"role": "user", "content": content}
 
     async def _model_call(

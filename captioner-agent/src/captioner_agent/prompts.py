@@ -13,6 +13,24 @@ DESCRIBE_TOOL = "describe_image"
 ENHANCE_TOOL = "ENHANCE_CAPTION"
 # Provided by the MCP server; named here so the prompt can refer to it.
 BLIP_TOOL = "BLIP_CAPTIONER"
+MANUAL_TOOL = "MANUAL_CAPTION"
+
+_MANUAL_ROUTER_PROMPT = """\
+You route messages in an image-captioning app. The user has attached images \
+and written the message below. Decide whether they want to caption the images \
+themselves.
+
+Answer "manual" if the message supplies caption text for the images, for \
+example "image1 is a red car", "caption these as: sks dog running", or one \
+caption to use for all of them. Also answer "manual" if the user says they \
+want to write the captions by hand, even if they have not written them yet.
+
+Answer "automatic" for everything else: no mention of captions, a request to \
+caption or describe the images for them, questions, or instructions about how \
+automatic captions should look (shorter, add a trigger word, and so on).
+
+Reply with exactly one word: manual or automatic.
+"""
 
 FALLBACK_CRITERIA = (
     "Write one plain-English caption on a single line, 15 to 40 words, subject first. "
@@ -45,6 +63,33 @@ the error.
 So do not caption freshly uploaded images again. Your part is to report what \
 happened, offer to enhance the captions, offer flipped copies, and carry out \
 anything else the user asks.
+
+# Manual captioning
+
+Some users write the captions themselves. When a message brings images and the \
+user wants that, the app skips the steps above and puts a <manual_captioning> \
+block in the message that lists the uploaded images. The user can also ask \
+for manual captions later, for images already in the chat. Either way, save \
+the captions with the {manual} tool.
+
+- Call {manual} once, with one entry per image, using the image paths exactly \
+as the app lists them. If several images share a caption, repeat the text in \
+each entry.
+- Use the user's words exactly as written. Do not rewrite, shorten, correct or \
+tidy them, do not apply the caption criteria, and keep any syntax such as \
+(word:1.2) or a trigger word. The caption criteria are for model-written \
+captions only.
+- The user may match captions to images by file name, by the order of the \
+upload list, or with one caption for all. If you cannot tell which caption \
+belongs to which image, or the user said they will write captions but gave \
+none, do not guess: reply in plain text saying what you need. Their next \
+message will arrive without images attached, and you can then call {manual} \
+with the paths from the earlier message.
+- An image the user wrote no caption for stays uncaptioned. Say so, and \
+mention that the user can supply a caption or ask for an automatic one.
+- Report briefly, saying how many captions were saved and any entry that \
+failed. Offer flipped copies as usual, but do not offer enhancement unless the \
+user asks, because they chose these words themselves.
 
 # Reporting
 
@@ -191,7 +236,12 @@ def build_system_prompt(criteria: str) -> str:
         describe=DESCRIBE_TOOL,
         enhance=ENHANCE_TOOL,
         blip=BLIP_TOOL,
+        manual=MANUAL_TOOL,
     )
+
+
+def build_manual_router_prompt() -> str:
+    return _MANUAL_ROUTER_PROMPT
 
 
 def build_vision_prompt(criteria: str) -> str:
@@ -203,14 +253,29 @@ def build_enhance_prompt(criteria: str, mode: str, guidance: str = "") -> str:
     return _ENHANCE_TEMPLATE.format(criteria=criteria, mode_instructions=ENHANCE_MODES[mode], guidance=extra)
 
 
-def build_user_message(files: SessionFiles, text: str, results: list[dict[str, Any]]) -> str:
-    """Prefix the user's text with the session folders and the captioning results."""
+def build_user_message(
+    files: SessionFiles, text: str, results: list[dict[str, Any]], manual: list[str] | None = None
+) -> str:
+    """Prefix the user's text with the session folders and the captioning results.
+
+    ``manual`` lists uploaded images the user wants to caption themselves; they
+    have not been captioned, so they are listed instead of reported on.
+    """
     parts = [
         "<session>\n"
         f"upload_dir: {files.tool_path('uploads')}\n"
         f"output_dir: {files.tool_path('outputs')}\n"
         "</session>"
     ]
+    if manual:
+        listing = "\n".join(files.tool_path("uploads", name) for name in manual)
+        parts.append(
+            "<manual_captioning>\n"
+            "The user wants to caption these images themselves, so the app did not caption "
+            f"them. Save the captions they wrote with {MANUAL_TOOL}.\n"
+            f"{listing}\n"
+            "</manual_captioning>"
+        )
     if results:
         listing = json.dumps(results, ensure_ascii=False, indent=1)
         parts.append(f"<caption_results>\n{listing}\n</caption_results>")

@@ -12,6 +12,7 @@ const TOOL_LABELS = {
   describe_image: "Anthropic caption",
   ENHANCE_CAPTION: "Enhanced caption",
   BLIP_CAPTIONER: "BLIP caption",
+  MANUAL_CAPTION: "Manual caption",
   caption_image: "Captioned with the local model",
   write_caption: "Saved caption",
   flip_image: "Created flipped copy",
@@ -19,8 +20,18 @@ const TOOL_LABELS = {
   caption_folder: "Captioned folder",
 };
 
+const PLACEHOLDER = "Attach images, or write the captions yourself, for example: image1 is a red car";
+
 // Steps that change what the captions panel shows.
-const OUTPUT_TOOLS = ["caption_from_png_info", "caption_with_vision", "write_caption", "flip_image", "ENHANCE_CAPTION"];
+const OUTPUT_TOOLS = [
+  "caption_from_png_info",
+  "caption_with_vision",
+  "BLIP_CAPTIONER",
+  "write_caption",
+  "flip_image",
+  "ENHANCE_CAPTION",
+  "MANUAL_CAPTION",
+];
 
 const $ = (id) => document.getElementById(id);
 const els = {
@@ -160,7 +171,8 @@ function showEmptyState() {
       "p",
       "",
       "Drop, paste or attach images or a folder. Each image gets a .txt caption with the same name, " +
-        "taken from its embedded generation prompt or written by the local vision model."
+        "taken from its embedded generation prompt or written by BLIP or Anthropic, your choice. " +
+        "Prefer to write them yourself? Say so, or type the captions with the images."
     )
   );
   els.messages.append(empty);
@@ -208,7 +220,10 @@ function addNotice(text, isError = false) {
 function stepLabel(name, input) {
   const target = (input && (input.path || input.image_path || input.directory)) || "";
   const base = String(target).split("/").pop();
-  return `${TOOL_LABELS[name] || name}${base ? ` · ${base}` : ""}`;
+  // Manual captioning saves many captions in one call.
+  const count = input && Array.isArray(input.captions) ? input.captions.length : 0;
+  const detail = base || (count ? `${count} image${count === 1 ? "" : "s"}` : "");
+  return `${TOOL_LABELS[name] || name}${detail ? ` · ${detail}` : ""}`;
 }
 
 function ensureActivity() {
@@ -492,7 +507,7 @@ function setBusy(busy) {
 function updatePlaceholder() {
   els.input.placeholder = state.pendingChoice
     ? "Pick an option above, or type your answer"
-    : "Drop, paste or attach images, then tell me what you need";
+    : PLACEHOLDER;
 }
 
 async function readEventStream(response) {

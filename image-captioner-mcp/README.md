@@ -13,6 +13,7 @@ MCP client, including Claude Desktop and Claude Code.
 | `read_png_metadata(path)` | Returns the prompt an image generator embedded (AUTOMATIC1111/Forge, ComfyUI, NovelAI, InvokeAI, Fooocus), or any other embedded text. |
 | `caption_from_png_info(path, output_dir, overwrite)` | Writes the caption from the embedded prompt: everything before `Negative prompt:`, with `( ) [ ] { } < > :`, attention weights and `<lora:...>` tags removed. No model. Reports `found: false` when there is no PNG info. |
 | `caption_image(path, style)` | Describes the image with the local Florence-2 model. `style` is `short`, `detailed` or `more_detailed`. |
+| `MANUAL_CAPTION(captions, output_dir, overwrite)` | Saves captions the user wrote, `[{path, caption}, ...]`, as `<image stem>.txt`. The text is kept as written, including `(word:1.2)`; only line breaks become spaces. One bad entry is reported and the rest are saved. |
 | `BLIP_CAPTIONER(path, style)` | Describes the image with the local BLIP model (default style `short`). Returns the caption without saving it. |
 | `write_caption(image_path, text, output_dir, overwrite)` | Writes `Image1.txt` for `Image1.png`. |
 | `flip_image(path, output_dir, direction)` | Saves `Image1_flipped.png`. |

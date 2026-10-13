@@ -16,6 +16,7 @@ import anyio
 from mcp.server.mcpserver import Context, MCPServer
 from mcp.server.mcpserver.exceptions import ToolError
 from PIL import UnidentifiedImageError
+from pydantic import BaseModel, Field
 
 from . import imaging
 from .captioner import Captioner, CaptionStyle, create_captioner
@@ -31,7 +32,8 @@ Image captioning tools. Every path is relative to the server's allowed root \
 Typical flow for one image: read_png_metadata to see whether the generator \
 embedded a prompt (caption_from_png_info captions from it directly); if not, \
 describe the image with a local model: caption_image (Florence-2) or \
-BLIP_CAPTIONER (BLIP); then write_caption to save "<image stem>.txt". \
+BLIP_CAPTIONER (BLIP); then write_caption to save "<image stem>.txt". If the \
+user wrote the captions, MANUAL_CAPTION saves them as written. \
 flip_image creates a mirrored copy, and mirror_caption swaps left/right \
 wording so a caption fits that copy.
 """
@@ -44,6 +46,13 @@ and embedding tags, BREAK keywords.
 - Remove quality and style boilerplate (masterpiece, best quality, 8k, ...).
 - Do not invent details that are not in the source text.
 """
+
+
+class ManualCaptionEntry(BaseModel):
+    """One image and the caption the user wrote for it."""
+
+    path: str = Field(description="Image path, relative to the allowed root.")
+    caption: str = Field(description="The caption text, exactly as the user wrote it.")
 
 
 @contextmanager
@@ -134,6 +143,21 @@ def create_server(service: CaptionService) -> MCPServer[None]:
         """
         with _tool_errors():
             return await anyio.to_thread.run_sync(service.blip_caption, path, style)
+
+    @server.tool(name="MANUAL_CAPTION")
+    def manual_caption(
+        captions: list[ManualCaptionEntry], output_dir: str | None = None, overwrite: bool = True
+    ) -> dict[str, Any]:
+        """Save captions that the user wrote themselves, as "<image stem>.txt".
+
+        Use this when the user supplies the caption text. No model is involved
+        and the wording is kept exactly as written, including syntax such as
+        (word:1.2); only line breaks become spaces. Send one entry per image,
+        with the same text repeated for images that share a caption. Each
+        image must exist. Entries that fail are reported and the rest are saved.
+        """
+        with _tool_errors():
+            return service.manual_caption([c.model_dump() for c in captions], output_dir, overwrite)
 
     @server.tool()
     def write_caption(

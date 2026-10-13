@@ -3,7 +3,10 @@
 A chat app that writes a caption file for every image you give it. Drop in
 `Image1.png` and you get `Image1.txt`.
 
-Images are captioned in a fixed order, enforced in code:
+If you would rather write the captions yourself, say so or type them with the
+images ("image1 is a red car, image2 is a blue boat"). The automatic steps are
+skipped and your words are saved exactly as written, by the `MANUAL_CAPTION`
+tool. Otherwise images are captioned in a fixed order, enforced in code:
 
 1. **PNG info first.** A Python script reads the generation prompt embedded in
    the image, keeps everything before `Negative prompt:`, and strips prompt

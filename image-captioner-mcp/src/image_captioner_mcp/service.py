@@ -9,6 +9,8 @@ from . import imaging, png_caption, png_meta
 from .captioner import CAPTION_STYLES, Captioner, CaptionStyle, create_blip_captioner
 from .config import ServerConfig
 
+MAX_MANUAL_CAPTIONS = 500
+
 
 class CaptionService:
     """Implements each tool against paths confined to ``config.allowed_root``."""
@@ -71,6 +73,44 @@ class CaptionService:
             "style": style,
             "backend": captioner.name,
             "device": captioner.device,
+        }
+
+    def manual_caption(
+        self, captions: list[dict[str, str]], output_dir: str | None = None, overwrite: bool = True
+    ) -> dict[str, Any]:
+        """Save captions the user wrote, each as "<image stem>.txt".
+
+        The text is kept as written, including prompt syntax such as ``(word:1.2)``;
+        only line breaks and runs of spaces become single spaces, because a caption
+        file holds one line. One bad entry is reported and does not stop the rest.
+        """
+        if not 0 < len(captions) <= MAX_MANUAL_CAPTIONS:
+            raise ValueError(f"send between 1 and {MAX_MANUAL_CAPTIONS} captions per call")
+        target_dir = self.resolve(output_dir) if output_dir else None
+        results: list[dict[str, str]] = []
+        for entry in captions:
+            path = entry.get("path", "")
+            try:
+                image = imaging.require_image(self.resolve(path))
+                text = " ".join(entry.get("caption", "").split())
+                target = imaging.write_caption(image, text, target_dir or image.parent, overwrite)
+            except (ValueError, FileNotFoundError, FileExistsError) as exc:
+                results.append({"path": path, "status": "error", "error": str(exc)})
+                continue
+            results.append(
+                {
+                    "path": self._display(image),
+                    "status": "written",
+                    "caption_path": self._display(target),
+                    "caption": text,
+                }
+            )
+        written = sum(r["status"] == "written" for r in results)
+        return {
+            "total": len(results),
+            "written": written,
+            "failed": len(results) - written,
+            "results": results,
         }
 
     def write_caption(
