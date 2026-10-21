@@ -47,6 +47,11 @@ chat asks how to caption images that have no PNG info (or if you pin
 Choose BLIP and it never leaves your machine. Enhancing with Anthropic sends
 only the text of a caption, never the image.
 
+Cleaning up and upscaling runs locally by default. Gemini is an optional extra,
+off unless you set `gemini_cleanup: true` and add a `GEMINI_API_KEY`. Even then
+the chat asks "Local or Gemini?" before each cleanup request, and an image is
+sent to Google only if you answer Gemini.
+
 The PNG info script also runs on its own, with no API key:
 
 ```powershell

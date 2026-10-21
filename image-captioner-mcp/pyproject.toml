@@ -9,7 +9,9 @@ description = "MCP server exposing local image captioning, PNG metadata reading 
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [
+    "httpx>=0.27",
     "mcp>=1.10",
+    "numpy>=1.26",
     "pillow>=10.0",
     "pydantic>=2.7",
 ]

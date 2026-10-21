@@ -9,3 +9,17 @@ criteria_file: config/caption_criteria.md
 mcp:
   transport: http
   url: http://captioner:8765/mcp
+
+# Gemini as an optional backend for CLEANUP_AND_ENHANCE (removes text, bubbles and boxes, upscales). OFF
+# by default: it sends images to Google and is billed per image. To use it, set this to
+# true and put GEMINI_API_KEY in .env, then add CAPTIONER_GEMINI_ENABLED=true there too so
+# the captioner container allows it. The chat still asks "Local or Gemini?" every time.
+gemini_cleanup: false
+gemini_model: gemini-3-pro-image-preview
+gemini_upscale_fallback: none
+# The size Gemini is asked for: 1K, 2K or 4K. The prompt, not the size, drives quality;
+# 4K is slower and costs more.
+gemini_image_size: 2K
+# In Docker the captioner container cannot read this file: it uses its built-in prompt
+# unless CAPTIONER_GEMINI_PROMPT_FILE points at a file mounted into it.
+gemini_prompt_file: config/gemini_cleanup_prompt.md

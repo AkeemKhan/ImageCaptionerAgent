@@ -203,6 +203,8 @@ def create_server(service: CaptionService) -> MCPServer[None]:
         regions: list[ImageRegion] | None = None,
         scale: Literal[1, 2, 4] = 2,
         overwrite: bool = True,
+        backend: Literal["local", "gemini"] = "local",
+        instructions: str | None = None,
     ) -> dict[str, Any]:
         """Remove text laid over an image and upscale it, saving "<stem>_clean<ext>".
 
@@ -212,6 +214,19 @@ def create_server(service: CaptionService) -> MCPServer[None]:
         Then the image is upscaled by `scale` (1 means no upscaling; the
         longest side is capped). The original is not changed, and the copy
         needs its own caption file.
+
+        `backend` is "local" (models on this machine) or "gemini". Gemini works from a
+        prompt: it removes every overlay (text with its bubbles, bars, boxes and borders,
+        stickers, product cards, inset photos), rebuilds those areas, restores the photo
+        (grain, noise, compression, blur) and upscales it (2K by default; scale 1 keeps
+        the original size). `instructions` adds the
+        user's own wishes to its prompt, e.g. "also remove the emoji stickers"; the
+        local backend ignores them. Gemini SENDS THE IMAGE TO GOOGLE and is billed per
+        image, so use it only after the user has chosen it. It needs the server to be
+        set up for it; if Gemini declines or fails, the local models are used and
+        `fallback_reason` says why. The result's `backend` is the one that actually
+        produced the file. With Gemini, `removed_text` is empty: the prompt, not OCR,
+        decides what goes.
 
         OCR cannot tell an overlay from text that belongs in the picture (a
         sign, a shirt), so every removed text is listed in `removed_text`. Run
@@ -223,7 +238,15 @@ def create_server(service: CaptionService) -> MCPServer[None]:
         with _tool_errors():
             return await anyio.to_thread.run_sync(
                 lambda: service.cleanup_and_enhance(
-                    path, output_dir, remove_text, keep_text or [], boxes, scale, overwrite
+                    path,
+                    output_dir,
+                    remove_text,
+                    keep_text or [],
+                    boxes,
+                    scale,
+                    overwrite,
+                    backend,
+                    instructions or "",
                 )
             )
 

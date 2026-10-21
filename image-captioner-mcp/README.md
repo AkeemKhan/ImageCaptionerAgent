@@ -18,7 +18,7 @@ MCP client, including Claude Desktop and Claude Code.
 | `write_caption(image_path, text, output_dir, overwrite)` | Writes `Image1.txt` for `Image1.png`. |
 | `flip_image(path, output_dir, direction)` | Saves `Image1_flipped.png`. |
 | `mirror_caption(text)` | Swaps "left" and "right" so a caption fits the flipped copy. |
-| `CLEANUP_AND_ENHANCE(path, output_dir, remove_text, keep_text, regions, scale, overwrite)` | Removes text laid over the image (watermarks, usernames, labels, Snapchat-style caption bars) and upscales it by `scale` (1, 2 or 4), saving `Image1_clean.png`. Lists every text it removed; `keep_text` spares text containing those words, and `regions` removes extra areas such as a logo, as fractions of the image. See [Cleanup and upscaling](#cleanup-and-upscaling). |
+| `CLEANUP_AND_ENHANCE(path, output_dir, remove_text, keep_text, regions, scale, overwrite, backend, instructions)` | Removes text laid over the image (watermarks, usernames, labels, Snapchat-style caption bars) and upscales it by `scale` (1, 2 or 4), saving `Image1_clean.png`. Lists every text it removed; `keep_text` spares text containing those words, and `regions` removes extra areas such as a logo, as fractions of the image. `backend` is `local` (default) or `gemini`, which sends the image to Google and also removes the bubbles and boxes around text, guided by a prompt and `instructions`. See [Cleanup and upscaling](#cleanup-and-upscaling). |
 | `caption_folder(directory, output_dir, style, overwrite)` | Captions a whole directory, with progress notifications. |
 
 It also exposes a resource, `captions://{folder}` (the caption files in a
@@ -99,6 +99,50 @@ copied to the clean copy, since removing an overlay does not change what the
 prompt describes. The copy has no caption file of its own; save one with
 `write_caption`.
 
+### Using Gemini instead
+
+With `backend: "gemini"`, Google's Gemini does the whole job from one prompt: it
+removes **every overlay** (text with the bubbles, caption bars, boxes and borders
+around it, stickers, emoji, product cards, inset photos), rebuilds those areas,
+**restores** the photo (film grain, noise, filters, compression artefacts, blur) and
+**sharpens** it; the size asked for is 2K by default (`CAPTIONER_GEMINI_IMAGE_SIZE`; scale 1 keeps the
+original size). The prompt deliberately never asks to keep the picture "exactly
+the same": that makes Gemini timid and the result soft. No local model decides what goes; the prompt
+does.
+
+**This sends the image to Google** and is billed per image, so the server refuses
+it unless the operator turned it on: set `CAPTIONER_GEMINI_ENABLED=true` and
+`GEMINI_API_KEY`. Without both, the tool returns an error and nothing leaves the
+machine. A client should ask the user before choosing it; the captioner-agent web
+app does, and enforces it.
+
+**The prompt.** The base prompt is the file named by `CAPTIONER_GEMINI_PROMPT_FILE`
+(the web app ships `captioner-agent/config/gemini_cleanup_prompt.md`), or a
+built-in copy of it. It is read on every call, so edits apply straight away. To it
+the server adds this image's details: the output size, any `keep_text` and
+`regions`, and the caller's `instructions` (for example "also remove the emoji
+stickers"). Text from the caller is trimmed and stripped of quotes and line breaks
+first.
+
+**Shapes.** Gemini only returns certain aspect ratios (1:1, 3:4, 9:16 and so on). A
+picture that is not close to one, such as a tall phone screenshot, is placed on a
+black background of the nearest supported shape, and the margins are cropped off
+Gemini's answer.
+
+**Fallback.** If Gemini declines, errors, runs out of credits, or answers with the
+wrong proportions, the local pipeline cleans the same image instead; Google is not
+asked twice. The result then has `backend: "local"`, `requested_backend: "gemini"`
+and a `fallback_reason`; `image_sent_to_google` says whether a request went out. If
+Gemini's image is smaller than asked for, its own pixels are kept, since stretching
+them only softens the result; it is only enlarged if it would be smaller than the
+original. Set `CAPTIONER_GEMINI_UPSCALE_FALLBACK` to `local` (local upscaler) or
+`resize` to reach the full size anyway. With Gemini,
+`removed_text` is empty.
+
+In testing, `gemini-2.5-flash-image` declined to remove a watermark and
+`gemini-3-pro-image-preview` did the removal and a 2K upscale, so that is the
+default. Image models change often: set `CAPTIONER_GEMINI_MODEL` to try another.
+
 ## Configuration
 
 All settings are environment variables.
@@ -121,12 +165,21 @@ All settings are environment variables.
 | `CAPTIONER_UPSCALE_MODEL_ID` | `caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr` | Swin2SR upscaler, x4. |
 | `CAPTIONER_UPSCALE_MODEL_REVISION` | unset | Pin the upscaler repository to a commit. |
 | `CAPTIONER_MAX_OUTPUT_SIDE` | `4096` | Upscaling stops before the longest side passes this. |
+| `CAPTIONER_GEMINI_ENABLED` | `false` | Allow `backend: "gemini"`. Also needs `GEMINI_API_KEY`. |
+| `GEMINI_API_KEY` | unset | Google AI Studio key. Never logged or included in errors. |
+| `CAPTIONER_GEMINI_MODEL` | `gemini-3-pro-image-preview` | The Gemini image model. |
+| `CAPTIONER_GEMINI_TIMEOUT_SECONDS` | `600` | How long to wait for one image; 4K takes minutes. |
+| `CAPTIONER_GEMINI_IMAGE_SIZE` | `2K` | `1K`, `2K` or `4K`: the size asked for. The prompt, not the size, drives quality. |
+| `CAPTIONER_GEMINI_PROMPT_FILE` | unset | Base prompt for Gemini; the built-in one if unset or empty. |
+| `CAPTIONER_GEMINI_UPSCALE_FALLBACK` | `none` | When Gemini's image is smaller than asked: `none` keeps it (sharpest), `local` upscales it locally, `resize` stretches it. |
 | `CAPTIONER_CRITERIA_FILE` | unset | Markdown file used by the `simplify_caption` prompt. |
 
 ## Safety
 
 - **Paths.** Every path is resolved (following `..` and symlinks) and must end
   up inside `CAPTIONER_ALLOWED_ROOT`.
+- **Gemini.** Off unless `CAPTIONER_GEMINI_ENABLED` and a key are both set. It is the only
+  code that contacts Google, and it does so only for a `backend: "gemini"` call.
 - **GPU.** The model loads once, inference runs one image at a time, CUDA is
   used only if enough VRAM is free, and a CUDA out-of-memory error moves the
   model to the CPU instead of failing.

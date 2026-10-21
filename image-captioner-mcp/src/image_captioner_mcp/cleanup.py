@@ -258,6 +258,11 @@ class CleanupResult:
     caption_bars: int = 0
     regions: int = 0
     upscaled_by: float = 1.0
+    # Which backend produced ``image``; ``fallback_reason`` is set when Gemini was asked for
+    # and the local pipeline ran instead.
+    backend: str = "local"
+    fallback_reason: str | None = None
+    gemini_size: tuple[int, int] | None = None
 
 
 def clean_image(
@@ -270,13 +275,15 @@ def clean_image(
     regions: Sequence[Region] = (),
     scale: int = 2,
     max_side: int = 4096,
+    known_text: tuple[list[TextBox], list[TextBox]] | None = None,
 ) -> CleanupResult:
     """Remove text and the given regions from an RGB ``image``, then upscale it.
 
     Text containing any of ``keep_text`` (case-insensitive) is left alone.
     ``regions`` are extra areas to remove, such as a logo without text, as
     ``(left, top, right, bottom)`` fractions of the width and height. The
-    upscaled image's longest side is capped at ``max_side``.
+    upscaled image's longest side is capped at ``max_side``. ``known_text`` is text already
+    found and split as :func:`split_text` returns it, to avoid reading the image again.
     """
     if scale not in UPSCALE_FACTORS:
         raise ValueError(f"scale must be one of {', '.join(map(str, UPSCALE_FACTORS))}")
@@ -285,23 +292,13 @@ def clean_image(
     holes: list[Box] = []
 
     if remove_text:
-        wanted = [k.strip().lower() for k in keep_text if k.strip()]
-        for found in find_all_text(finder, image):
-            if any(k in found.text.lower() for k in wanted):
-                result.kept.append(found)
-            else:
-                result.removed.append(found)
+        result.removed, result.kept = known_text or split_text(finder, image, keep_text)
 
     if result.removed:
         pixels = np.asarray(image, np.float32).copy()
-        lum = pixels @ np.array([0.299, 0.587, 0.114], np.float32)
-        bars: list[tuple[int, int]] = []
         for found in result.removed:
-            box = _clip(found.box, width, height)
-            holes.append(_pad(box, width, height))
-            bar = find_caption_bar(lum, box)
-            if bar and bar not in bars:
-                bars.append(bar)
+            holes.append(pad_box(clip_box(found.box, width, height), width, height))
+        bars = find_bars(image, result.removed)
         for top, bottom in bars:
             restore_bar(pixels, top, bottom, _text_columns(result.removed, width))
             # The bar's edges are soft, so they are painted over too.
@@ -312,7 +309,7 @@ def clean_image(
         image = _to_image(pixels / 255)
 
     for region in regions:
-        holes.append(_region_box(region, width, height))
+        holes.append(region_box(region, width, height))
     result.regions = len(regions)
 
     if holes:
@@ -326,6 +323,33 @@ def clean_image(
         result.upscaled_by = round(factor, 3)
     result.image = image
     return result
+
+
+def split_text(
+    finder: TextFinder, image: Image.Image, keep_text: Sequence[str]
+) -> tuple[list[TextBox], list[TextBox]]:
+    """Find the text in ``image`` and split it into ``(to remove, to keep)``.
+
+    Text containing any of ``keep_text`` (case-insensitive) is kept.
+    """
+    wanted = [k.strip().lower() for k in keep_text if k.strip()]
+    removed: list[TextBox] = []
+    kept: list[TextBox] = []
+    for found in find_all_text(finder, image):
+        (kept if any(k in found.text.lower() for k in wanted) else removed).append(found)
+    return removed, kept
+
+
+def find_bars(image: Image.Image, text: Sequence[TextBox]) -> list[tuple[int, int]]:
+    """Rows ``(top, bottom)`` of each dark caption bar behind the given text, without repeats."""
+    width, height = image.size
+    lum = np.asarray(image, np.float32) @ np.array([0.299, 0.587, 0.114], np.float32)
+    bars: list[tuple[int, int]] = []
+    for found in text:
+        bar = find_caption_bar(lum, clip_box(found.box, width, height))
+        if bar and bar not in bars:
+            bars.append(bar)
+    return bars
 
 
 def find_all_text(finder: TextFinder, image: Image.Image) -> list[TextBox]:
@@ -455,7 +479,7 @@ def restore_bar(pixels: Array, top: int, bottom: int, text_columns: Array) -> No
 def _text_columns(found: list[TextBox], width: int) -> Array:
     columns = np.zeros(width, bool)
     for item in found:
-        x0, _, x1, _ = _clip(item.box, width, 1)
+        x0, _, x1, _ = clip_box(item.box, width, 1)
         pad = max(4, (x1 - x0) // 10)
         columns[max(0, x0 - pad) : min(width, x1 + pad)] = True
     return columns
@@ -519,14 +543,14 @@ def _merge(boxes: list[Box]) -> list[Box]:
     return merged
 
 
-def _pad(box: Box, width: int, height: int) -> Box:
+def pad_box(box: Box, width: int, height: int) -> Box:
     """Grow a text box to cover outlines, shadows and anti-aliasing."""
     x0, y0, x1, y1 = box
     pad = max(3, round(0.25 * (y1 - y0)))
     return max(0, x0 - pad), max(0, y0 - pad), min(width, x1 + pad), min(height, y1 + pad)
 
 
-def _clip(box: Sequence[float], width: int, height: int) -> Box:
+def clip_box(box: Sequence[float], width: int, height: int) -> Box:
     x0, y0, x1, y1 = box
     return (
         max(0, min(width, math.floor(x0))),
@@ -536,11 +560,11 @@ def _clip(box: Sequence[float], width: int, height: int) -> Box:
     )
 
 
-def _region_box(region: Region, width: int, height: int) -> Box:
+def region_box(region: Region, width: int, height: int) -> Box:
     left, top, right, bottom = region
     if not (0 <= left < right <= 1 and 0 <= top < bottom <= 1):
         raise ValueError("each region needs 0 <= left < right <= 1 and 0 <= top < bottom <= 1")
-    return _clip((left * width, top * height, right * width, bottom * height), width, height)
+    return clip_box((left * width, top * height, right * width, bottom * height), width, height)
 
 
 def _area(box: Sequence[float]) -> float:

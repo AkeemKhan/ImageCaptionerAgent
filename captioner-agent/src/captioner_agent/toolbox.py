@@ -11,14 +11,15 @@ from typing import Any, Protocol
 
 from mcp import Client, StdioServerParameters
 
-from .settings import Settings
+from .settings import GEMINI_KEY_ENV, Settings
 
 logger = logging.getLogger(__name__)
 
 # The first caption call can wait on a model download and load.
 TOOL_TIMEOUT_SECONDS = 900.0
-# Credentials the captioning server has no use for and must not inherit.
-_WITHHELD_ENV_PREFIXES = ("ANTHROPIC_",)
+# Credentials the captioning server has no use for and must not inherit. The Gemini key
+# is the exception, and is handed over explicitly below when Gemini cleanup is on.
+_WITHHELD_ENV_PREFIXES = ("ANTHROPIC_", "GEMINI_", "GOOGLE_API")
 
 
 @dataclass(frozen=True)
@@ -83,6 +84,17 @@ class McpToolbox:
         backend = self._settings.vision_backend
         env["CAPTIONER_PRELOAD"] = str(backend == "local").lower()
         env["CAPTIONER_PRELOAD_BLIP"] = str(backend in ("ask", "blip")).lower()
+        if self._settings.gemini_cleanup_ready:
+            env.update(
+                {
+                    GEMINI_KEY_ENV: os.environ[GEMINI_KEY_ENV].strip(),
+                    "CAPTIONER_GEMINI_ENABLED": "true",
+                    "CAPTIONER_GEMINI_MODEL": self._settings.gemini_model,
+                    "CAPTIONER_GEMINI_UPSCALE_FALLBACK": self._settings.gemini_upscale_fallback,
+                    "CAPTIONER_GEMINI_IMAGE_SIZE": self._settings.gemini_image_size,
+                    "CAPTIONER_GEMINI_PROMPT_FILE": str(self._settings.gemini_prompt_file),
+                }
+            )
         env.update(mcp.env)
         env["CAPTIONER_ALLOWED_ROOT"] = str(self._settings.sessions_dir)
         env["CAPTIONER_CRITERIA_FILE"] = str(self._settings.criteria_file)

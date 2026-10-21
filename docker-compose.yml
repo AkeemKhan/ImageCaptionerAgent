@@ -7,6 +7,10 @@ services:
     environment:
       CAPTIONER_MODEL_ID: microsoft/Florence-2-large
       CAPTIONER_DEVICE: auto
+      # Gemini cleanup (optional, off by default). Only these two reach this container, not
+      # the whole .env, so it never sees the Anthropic key.
+      CAPTIONER_GEMINI_ENABLED: ${CAPTIONER_GEMINI_ENABLED:-false}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
     volumes:
       - sessions:/data/sessions
       - models:/models

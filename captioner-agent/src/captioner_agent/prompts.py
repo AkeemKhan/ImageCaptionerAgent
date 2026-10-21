@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .cleanup_choice import GEMINI_OPTION, LOCAL_OPTION
 from .files import SessionFiles
 
 ASK_USER_TOOL = "ask_user"
@@ -32,6 +33,26 @@ automatic captions should look (shorter, add a trigger word, and so on).
 
 Reply with exactly one word: manual or automatic.
 """
+
+# Added to the cleanup section only when Gemini is switched on and has a key.
+_CLEANUP_CHOICE = """
+- {cleanup} can also use Gemini, which works from a prompt: it removes every \
+overlay (text with its bubbles, bars, boxes and borders, stickers, product cards, \
+inset photos), rebuilds those areas, restores the photo (grain, noise, compression, \
+blur) and sharpens it. Gemini runs on Google's servers: the images \
+leave this machine and are billed per image. So before the first cleanup in a \
+request, ask the user which to use with {ask_user}, with exactly these two \
+options: "{local}" and "{gemini}". In the question, say how many images are \
+involved. Wait for the answer, then call the tool. Never pass its backend \
+argument: the app applies the user's choice, and refuses the call until they \
+have chosen.
+- With Gemini, pass any specific wishes the user voiced (for example "also remove \
+the emoji stickers" or "leave the frame") as instructions, in their words. With \
+Gemini the result's removed_text is empty, since the prompt rather than text \
+detection decides what goes, so describe what was asked for, not a list of texts.
+- The result's backend field says which one made the file. If fallback_reason is \
+set, Gemini could not be used for that image and the local models ran instead: \
+tell the user why. Gemini sometimes declines to remove watermarks."""
 
 FALLBACK_CRITERIA = (
     "Write one plain-English caption on a single line, 15 to 40 words, subject first. "
@@ -169,7 +190,7 @@ the user says it is.
 so save the original image's current caption for it with write_caption, \
 using the clean file as image_path and output_dir as the destination.
 - If the user also wants flipped copies, flip the clean copies rather than \
-the originals.
+the originals.{cleanup_choice}
 
 # Other requests
 
@@ -254,9 +275,14 @@ def load_criteria(path: Path) -> str:
     return text or FALLBACK_CRITERIA
 
 
-def build_system_prompt(criteria: str) -> str:
+def build_system_prompt(criteria: str, gemini_cleanup: bool = False) -> str:
     return _SYSTEM_TEMPLATE.format(
         criteria=criteria,
+        cleanup_choice=_CLEANUP_CHOICE.format(
+            ask_user=ASK_USER_TOOL, local=LOCAL_OPTION, gemini=GEMINI_OPTION, cleanup=CLEANUP_TOOL
+        )
+        if gemini_cleanup
+        else "",
         ask_user=ASK_USER_TOOL,
         describe=DESCRIBE_TOOL,
         enhance=ENHANCE_TOOL,
