@@ -5,7 +5,8 @@ from __future__ import annotations
 import logging
 import re
 import threading
-from typing import Any, Literal, Protocol, get_args
+from collections.abc import Callable
+from typing import Any, Literal, NamedTuple, Protocol, TypeVar, get_args
 
 from PIL import Image
 
@@ -13,8 +14,12 @@ from .config import ServerConfig
 
 logger = logging.getLogger(__name__)
 
+T = TypeVar("T")
+
 CaptionStyle = Literal["short", "detailed", "more_detailed"]
 CAPTION_STYLES: tuple[str, ...] = get_args(CaptionStyle)
+
+_FLORENCE_OCR_TASK = "<OCR_WITH_REGION>"
 
 _FLORENCE_TASKS: dict[str, str] = {
     "short": "<CAPTION>",
@@ -58,6 +63,37 @@ def clean_blip_text(text: str) -> str:
     """
     text = " ".join(_BLIP_ARTIFACT.sub("", text).split())
     return _THERE_IS.sub("", text)
+
+
+def pick_device(torch: Any, config: ServerConfig) -> str:
+    """Choose ``cuda`` or ``cpu`` for a model about to load.
+
+    CUDA is used only when enough VRAM is free; ``CAPTIONER_DEVICE=cuda`` turns
+    a shortfall into an error instead of a quiet fall back to the CPU.
+    """
+    wanted = config.device
+    if wanted == "cpu":
+        return "cpu"
+    if not torch.cuda.is_available():
+        if wanted == "cuda":
+            raise RuntimeError("CAPTIONER_DEVICE=cuda but CUDA is not available")
+        return "cpu"
+    free_bytes, _total = torch.cuda.mem_get_info()
+    free_mb = free_bytes // (1024 * 1024)
+    if free_mb < config.min_free_vram_mb:
+        message = f"only {free_mb} MB of VRAM free, below the {config.min_free_vram_mb} MB minimum"
+        if wanted == "cuda":
+            raise RuntimeError(f"CAPTIONER_DEVICE=cuda but {message}")
+        logger.warning("Using CPU: %s", message)
+        return "cpu"
+    return "cuda"
+
+
+class TextBox(NamedTuple):
+    """Text found in an image and its bounding box ``(x0, y0, x1, y1)`` in pixels."""
+
+    text: str
+    box: tuple[float, float, float, float]
 
 
 class Captioner(Protocol):
@@ -145,7 +181,7 @@ class TorchCaptioner:
             ) from exc
 
         self._torch = torch
-        device = self._pick_device()
+        device = pick_device(torch, self._config)
         dtype = torch.float16 if device == "cuda" else torch.float32
         logger.info("Loading %s on %s", self.name, device)
         processor, model = self._build(dtype)
@@ -154,25 +190,6 @@ class TorchCaptioner:
         self._device = device
         logger.info("%s ready on %s", self.name, device)
 
-    def _pick_device(self) -> str:
-        torch = self._torch
-        wanted = self._config.device
-        if wanted == "cpu":
-            return "cpu"
-        if not torch.cuda.is_available():
-            if wanted == "cuda":
-                raise RuntimeError("CAPTIONER_DEVICE=cuda but CUDA is not available")
-            return "cpu"
-        free_bytes, _total = torch.cuda.mem_get_info()
-        free_mb = free_bytes // (1024 * 1024)
-        if free_mb < self._config.min_free_vram_mb:
-            message = f"only {free_mb} MB of VRAM free, below the {self._config.min_free_vram_mb} MB minimum"
-            if wanted == "cuda":
-                raise RuntimeError(f"CAPTIONER_DEVICE=cuda but {message}")
-            logger.warning("Using CPU: %s", message)
-            return "cpu"
-        return "cuda"
-
     @property
     def _dtype(self) -> Any:
         return self._torch.float16 if self._device == "cuda" else self._torch.float32
@@ -180,11 +197,15 @@ class TorchCaptioner:
     def caption(self, image: Image.Image, style: CaptionStyle = "detailed") -> str:
         if style not in CAPTION_STYLES:
             raise ValueError(f"style must be one of {', '.join(CAPTION_STYLES)}")
+        return self._run(self._generate, image, style)
+
+    def _run(self, fn: Callable[..., T], *args: Any) -> T:
+        """Call ``fn`` with the model loaded, holding the lock, retrying on the CPU after a CUDA OOM."""
         with self._lock:
             self._load_locked()
             torch = self._torch
             try:
-                return self._generate(image, style)
+                return fn(*args)
             except torch.cuda.OutOfMemoryError:
                 if self._device != "cuda":
                     raise
@@ -192,7 +213,7 @@ class TorchCaptioner:
                 self._model = self._model.to("cpu").float()
                 self._device = "cpu"
                 torch.cuda.empty_cache()
-                return self._generate(image, style)
+                return fn(*args)
 
     def unload(self) -> None:
         with self._lock:
@@ -226,9 +247,22 @@ class Florence2Captioner(TorchCaptioner):
         model = AutoModelForCausalLM.from_pretrained(model_id, torch_dtype=dtype, **kwargs)
         return processor, model
 
+    def find_text(self, image: Image.Image) -> list[TextBox]:
+        """Every piece of text Florence-2 reads in ``image``, with its box in pixels."""
+        parsed = self._run(self._task, image, _FLORENCE_OCR_TASK)
+        found: list[TextBox] = []
+        for quad, label in zip(parsed.get("quad_boxes", []), parsed.get("labels", []), strict=False):
+            xs, ys = quad[0::2], quad[1::2]
+            text = str(label).replace("</s>", "").replace("<s>", "").strip()
+            found.append(TextBox(text, (min(xs), min(ys), max(xs), max(ys))))
+        return found
+
     def _generate(self, image: Image.Image, style: str) -> str:
-        torch = self._torch
         task = _FLORENCE_TASKS[style]
+        return str(self._task(image, task)[task]).strip()
+
+    def _task(self, image: Image.Image, task: str) -> Any:
+        torch = self._torch
         inputs = self._processor(text=task, images=image, return_tensors="pt")
         with torch.inference_mode():
             generated = self._model.generate(
@@ -242,7 +276,7 @@ class Florence2Captioner(TorchCaptioner):
         parsed = self._processor.post_process_generation(
             decoded, task=task, image_size=(image.width, image.height)
         )
-        return str(parsed[task]).strip()
+        return parsed[task] if task == _FLORENCE_OCR_TASK else parsed
 
 
 class BlipCaptioner(TorchCaptioner):

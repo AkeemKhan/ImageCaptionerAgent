@@ -2,7 +2,7 @@
 
 An MCP server that captions images with a locally hosted model and exposes the
 file work around it: reading generator metadata, writing caption files and
-making flipped copies. It knows nothing about any chat UI, so it works from any
+making flipped copies, and cleans up and upscales images. It knows nothing about any chat UI, so it works from any
 MCP client, including Claude Desktop and Claude Code.
 
 ## Tools
@@ -18,6 +18,7 @@ MCP client, including Claude Desktop and Claude Code.
 | `write_caption(image_path, text, output_dir, overwrite)` | Writes `Image1.txt` for `Image1.png`. |
 | `flip_image(path, output_dir, direction)` | Saves `Image1_flipped.png`. |
 | `mirror_caption(text)` | Swaps "left" and "right" so a caption fits the flipped copy. |
+| `CLEANUP_AND_ENHANCE(path, output_dir, remove_text, keep_text, regions, scale, overwrite)` | Removes text laid over the image (watermarks, usernames, labels, Snapchat-style caption bars) and upscales it by `scale` (1, 2 or 4), saving `Image1_clean.png`. Lists every text it removed; `keep_text` spares text containing those words, and `regions` removes extra areas such as a logo, as fractions of the image. See [Cleanup and upscaling](#cleanup-and-upscaling). |
 | `caption_folder(directory, output_dir, style, overwrite)` | Captions a whole directory, with progress notifications. |
 
 It also exposes a resource, `captions://{folder}` (the caption files in a
@@ -56,7 +57,8 @@ looks like a hang. Download them ahead of time instead:
 
 ```
 captioner-download-models              # BLIP only, about 1.9 GB
-captioner-download-models --all        # BLIP and Florence-2, about 3.4 GB
+captioner-download-models --cleanup    # Florence-2, LaMa and Swin2SR, for CLEANUP_AND_ENHANCE, about 1.8 GB
+captioner-download-models --all        # every model, about 3.7 GB
 captioner-download-models --dry-run    # list the files without downloading
 ```
 
@@ -70,6 +72,32 @@ Hugging Face account or token. BLIP is BSD-3-Clause licensed and not gated.
 
 BLIP runs in about 1 GB of VRAM (Florence-2 large uses about 1.8 GB) and loads
 in a few seconds once cached.
+
+## Cleanup and upscaling
+
+`CLEANUP_AND_ENHANCE` runs three local models, each loaded on first use:
+
+1. **Find text.** Florence-2's OCR, the model behind `caption_image`, so it is
+   not loaded twice. Large images are also read in tiles, so a small corner
+   watermark is not lost.
+2. **Remove it.** When the text sits on a semi-transparent dark bar running
+   across the image, as Snapchat captions do, the bar is first undone: the
+   darkening is measured at its edges and reversed, so the picture under it
+   comes back instead of being repainted. Then LaMa (about 200 MB) paints out
+   the letters, working on crops around them so a large photo does not need
+   much VRAM.
+3. **Upscale.** Swin2SR real-world x4 (about 50 MB) runs in tiles; the result
+   is resized to the requested scale, and capped at `CAPTIONER_MAX_OUTPUT_SIDE`.
+
+The OCR reads all text, including text that belongs in the picture, such as a
+sign or a printed shirt. That is why the result lists what was removed: run it
+again with `keep_text` to keep some. Text the OCR cannot read, such as a logo
+drawn as a picture, can be removed with `regions`.
+
+The original is never changed. PNG text chunks (the generation prompt) are
+copied to the clean copy, since removing an overlay does not change what the
+prompt describes. The copy has no caption file of its own; save one with
+`write_caption`.
 
 ## Configuration
 
@@ -88,6 +116,11 @@ All settings are environment variables.
 | `CAPTIONER_BLIP_MODEL_ID` | `Salesforce/blip-image-captioning-large` | Use `Salesforce/blip-image-captioning-base` (about 1 GB) to save disk and VRAM. |
 | `CAPTIONER_BLIP_MODEL_REVISION` | unset | Pin the BLIP repository to a commit. |
 | `CAPTIONER_PRELOAD_BLIP` | `false` | Load BLIP at startup instead of on first use. |
+| `CAPTIONER_LAMA_MODEL_ID` | `fashn-ai/LaMa` | Repository holding the LaMa inpainting model as `big-lama.pt` (TorchScript). |
+| `CAPTIONER_LAMA_MODEL_REVISION` | pinned commit | Set to another commit to move off the tested one. |
+| `CAPTIONER_UPSCALE_MODEL_ID` | `caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr` | Swin2SR upscaler, x4. |
+| `CAPTIONER_UPSCALE_MODEL_REVISION` | unset | Pin the upscaler repository to a commit. |
+| `CAPTIONER_MAX_OUTPUT_SIDE` | `4096` | Upscaling stops before the longest side passes this. |
 | `CAPTIONER_CRITERIA_FILE` | unset | Markdown file used by the `simplify_caption` prompt. |
 
 ## Safety

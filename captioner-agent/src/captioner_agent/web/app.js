@@ -13,6 +13,7 @@ const TOOL_LABELS = {
   ENHANCE_CAPTION: "Enhanced caption",
   BLIP_CAPTIONER: "BLIP caption",
   MANUAL_CAPTION: "Manual caption",
+  CLEANUP_AND_ENHANCE: "Cleaned up and upscaled",
   caption_image: "Captioned with the local model",
   write_caption: "Saved caption",
   flip_image: "Created flipped copy",
@@ -31,6 +32,7 @@ const OUTPUT_TOOLS = [
   "flip_image",
   "ENHANCE_CAPTION",
   "MANUAL_CAPTION",
+  "CLEANUP_AND_ENHANCE",
 ];
 
 const $ = (id) => document.getElementById(id);
@@ -172,7 +174,8 @@ function showEmptyState() {
       "",
       "Drop, paste or attach images or a folder. Each image gets a .txt caption with the same name, " +
         "taken from its embedded generation prompt or written by BLIP or Anthropic, your choice. " +
-        "Prefer to write them yourself? Say so, or type the captions with the images."
+        "Prefer to write them yourself? Say so, or type the captions with the images. " +
+        "You can also ask to remove watermarks and text overlays and upscale the images."
     )
   );
   els.messages.append(empty);
@@ -625,6 +628,7 @@ function outputCard(item, draft) {
   img.loading = "lazy";
   link.append(img);
   const name = el("div", "output-name", item.name);
+  if (item.cleaned) name.append(" ", el("span", "badge", "cleaned"));
   if (item.flipped) name.append(" ", el("span", "badge", "flipped"));
   name.append(el("span", "output-file", item.caption_file));
   head.append(link, name);

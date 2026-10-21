@@ -9,7 +9,7 @@ import sys
 import threading
 from collections.abc import AsyncIterator, Iterator
 from contextlib import asynccontextmanager, contextmanager
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import unquote
 
 import anyio
@@ -35,7 +35,8 @@ describe the image with a local model: caption_image (Florence-2) or \
 BLIP_CAPTIONER (BLIP); then write_caption to save "<image stem>.txt". If the \
 user wrote the captions, MANUAL_CAPTION saves them as written. \
 flip_image creates a mirrored copy, and mirror_caption swaps left/right \
-wording so a caption fits that copy.
+wording so a caption fits that copy. CLEANUP_AND_ENHANCE saves a copy with \
+watermarks, labels and app captions removed, upscaled.
 """
 
 DEFAULT_CRITERIA = """\
@@ -53,6 +54,15 @@ class ManualCaptionEntry(BaseModel):
 
     path: str = Field(description="Image path, relative to the allowed root.")
     caption: str = Field(description="The caption text, exactly as the user wrote it.")
+
+
+class ImageRegion(BaseModel):
+    """An area to remove, as fractions of the image width and height (0 to 1)."""
+
+    left: float = Field(ge=0, le=1)
+    top: float = Field(ge=0, le=1)
+    right: float = Field(ge=0, le=1)
+    bottom: float = Field(ge=0, le=1)
 
 
 @contextmanager
@@ -88,6 +98,7 @@ def create_server(service: CaptionService) -> MCPServer[None]:
         finally:
             service.captioner.unload()
             service.blip_captioner.unload()
+            service.enhancer.unload()
 
     server: MCPServer[None] = MCPServer("image-captioner", instructions=INSTRUCTIONS, lifespan=lifespan)
 
@@ -182,6 +193,39 @@ def create_server(service: CaptionService) -> MCPServer[None]:
         """
         with _tool_errors():
             return service.flip_image(path, output_dir, direction)
+
+    @server.tool(name="CLEANUP_AND_ENHANCE")
+    async def cleanup_and_enhance(
+        path: str,
+        output_dir: str | None = None,
+        remove_text: bool = True,
+        keep_text: list[str] | None = None,
+        regions: list[ImageRegion] | None = None,
+        scale: Literal[1, 2, 4] = 2,
+        overwrite: bool = True,
+    ) -> dict[str, Any]:
+        """Remove text laid over an image and upscale it, saving "<stem>_clean<ext>".
+
+        Removes watermarks, labels, usernames and app captions such as a
+        Snapchat caption bar: an OCR model finds the text, a semi-transparent
+        bar behind it is undone, and an inpainting model paints the text out.
+        Then the image is upscaled by `scale` (1 means no upscaling; the
+        longest side is capped). The original is not changed, and the copy
+        needs its own caption file.
+
+        OCR cannot tell an overlay from text that belongs in the picture (a
+        sign, a shirt), so every removed text is listed in `removed_text`. Run
+        again with `keep_text` (case-insensitive substrings) to keep some, or
+        remove_text=false to only upscale. `regions` removes extra areas the
+        OCR cannot read, such as a logo, given as fractions of the image size.
+        """
+        boxes = [(r.left, r.top, r.right, r.bottom) for r in regions or []]
+        with _tool_errors():
+            return await anyio.to_thread.run_sync(
+                lambda: service.cleanup_and_enhance(
+                    path, output_dir, remove_text, keep_text or [], boxes, scale, overwrite
+                )
+            )
 
     @server.tool()
     def mirror_caption(text: str) -> dict[str, str]:

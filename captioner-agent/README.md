@@ -60,6 +60,16 @@ and runs before Claude is asked anything:
 4. Claude then asks once whether you also want horizontally flipped copies. If you say yes, each copy is saved as
    `Image1_flipped.png` with a caption in which left and right are swapped.
 
+**Cleanup and upscaling, on request.** Ask Claude to remove watermarks, text,
+usernames or a Snapchat caption, or to upscale your images, and it runs the
+`CLEANUP_AND_ENHANCE` tool on your GPU. Each image gets a copy such as
+`Image1_clean.png` (upscaled 2x unless you ask for 4x or none) with the
+original's caption, and the original is left alone. Claude tells you what text
+was removed. If some of it belonged in the picture, such as a sign, say so and
+it runs again keeping that text. A logo without readable text can be removed
+too: tell Claude where it is. If you also want flipped copies, ask for the
+cleanup first, so the flipped copies are made from the clean images.
+
 ## Configuration
 
 | File | Purpose |

@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from . import imaging, png_caption, png_meta
-from .captioner import CAPTION_STYLES, Captioner, CaptionStyle, create_blip_captioner
+from PIL import Image
+
+from . import cleanup, imaging, png_caption, png_meta
+from .captioner import CAPTION_STYLES, Captioner, CaptionStyle, TextBox, create_blip_captioner
+from .cleanup import Enhancer, NoTextFinder, TextFinder
 from .config import ServerConfig
 
 MAX_MANUAL_CAPTIONS = 500
@@ -16,12 +20,23 @@ class CaptionService:
     """Implements each tool against paths confined to ``config.allowed_root``."""
 
     def __init__(
-        self, config: ServerConfig, captioner: Captioner, blip_captioner: Captioner | None = None
+        self,
+        config: ServerConfig,
+        captioner: Captioner,
+        blip_captioner: Captioner | None = None,
+        enhancer: Enhancer | None = None,
+        text_finder: TextFinder | None = None,
     ) -> None:
         self.config = config
         self.captioner = captioner
         # Creating a BLIP captioner loads nothing; its model loads on first use.
         self.blip_captioner = blip_captioner or create_blip_captioner(config)
+        # Likewise the cleanup models. Text is found with the captioning model
+        # (Florence-2) when it can read text, so no second copy is loaded.
+        self.enhancer = enhancer or cleanup.create_enhancer(config)
+        if text_finder is None:
+            text_finder = captioner if isinstance(captioner, TextFinder) else NoTextFinder()
+        self.text_finder = text_finder
 
     def resolve(self, path: str) -> Path:
         return imaging.resolve_inside(self.config.allowed_root, path)
@@ -129,6 +144,53 @@ class CaptionService:
         image = self.resolve(path)
         target = imaging.flip_image(image, self._output_dir(output_dir, image.parent), direction)
         return {"flipped_path": self._display(target), "direction": direction}
+
+    def cleanup_and_enhance(
+        self,
+        path: str,
+        output_dir: str | None = None,
+        remove_text: bool = True,
+        keep_text: Sequence[str] = (),
+        regions: Sequence[cleanup.Region] = (),
+        scale: int = 2,
+        overwrite: bool = True,
+    ) -> dict[str, Any]:
+        """Remove overlaid text and upscale; save ``<stem>_clean<ext>``, leaving the original alone."""
+        source = self.resolve(path)
+        target_dir = self._output_dir(output_dir, source.parent)
+        image, text = imaging.load_upright(source)
+        alpha = image.getchannel("A") if "A" in image.getbands() else None
+        result = cleanup.clean_image(
+            image.convert("RGB"),
+            self.text_finder,
+            self.enhancer,
+            remove_text=remove_text,
+            keep_text=keep_text,
+            regions=regions,
+            scale=scale,
+            max_side=self.config.max_output_side,
+        )
+        cleaned = result.image
+        if alpha is not None:
+            cleaned.putalpha(alpha.resize(cleaned.size, Image.Resampling.LANCZOS))
+        target = imaging.save_cleaned(cleaned, source, target_dir, text, overwrite)
+
+        def listed(items: list[TextBox]) -> list[dict[str, Any]]:
+            shown = items[: cleanup.MAX_REPORTED_TEXT]
+            return [{"text": t.text, "box": [round(v) for v in t.box]} for t in shown]
+
+        return {
+            "path": self._display(source),
+            "cleaned_path": self._display(target),
+            "removed_text": listed(result.removed),
+            "kept_text": listed(result.kept),
+            "caption_bars": result.caption_bars,
+            "regions_removed": result.regions,
+            "original_size": list(image.size),
+            "size": list(cleaned.size),
+            "upscaled_by": result.upscaled_by,
+            "device": self.enhancer.device,
+        }
 
     def caption_to_file(
         self, image: Path, output_dir: Path, style: CaptionStyle, overwrite: bool

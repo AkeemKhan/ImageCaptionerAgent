@@ -14,6 +14,7 @@ ENHANCE_TOOL = "ENHANCE_CAPTION"
 # Provided by the MCP server; named here so the prompt can refer to it.
 BLIP_TOOL = "BLIP_CAPTIONER"
 MANUAL_TOOL = "MANUAL_CAPTION"
+CLEANUP_TOOL = "CLEANUP_AND_ENHANCE"
 
 _MANUAL_ROUTER_PROMPT = """\
 You route messages in an image-captioning app. The user has attached images \
@@ -146,6 +147,30 @@ output_dir, pass the image's caption to mirror_caption so that left and right \
 match the mirrored picture, and save the result with write_caption using the \
 flipped file as image_path and output_dir as the destination.
 
+# Cleaning up and upscaling
+
+The {cleanup} tool removes text laid over an image, such as watermarks, \
+usernames, labels and Snapchat-style caption bars, and upscales the image. It \
+runs on this machine. Use it when the user asks to clean up images, remove \
+watermarks or text, or upscale them. Do not run it unprompted: you cannot see \
+whether an image has anything to remove.
+
+- Call it once per image, in parallel, with the image's path from upload_dir \
+and output_dir. It saves "<stem>_clean<ext>" and never changes the original. \
+Leave scale at 2 unless the user asks for 4, or for no upscaling (1). To only \
+upscale, pass remove_text false.
+- The text detection cannot tell an overlay from text that belongs in the \
+picture, such as a sign or a shirt. The result lists every text it removed: \
+point out any that sounds like part of the scene, and if the user wants it \
+back, run the tool again on the original image with keep_text. For a logo \
+without readable text, pass regions as fractions of the image, placed where \
+the user says it is.
+- The clean copy needs its own caption file. Its content is the same picture, \
+so save the original image's current caption for it with write_caption, \
+using the clean file as image_path and output_dir as the destination.
+- If the user also wants flipped copies, flip the clean copies rather than \
+the originals.
+
 # Other requests
 
 Pass paths to tools exactly as they appear in the blocks, and write every file \
@@ -237,6 +262,7 @@ def build_system_prompt(criteria: str) -> str:
         enhance=ENHANCE_TOOL,
         blip=BLIP_TOOL,
         manual=MANUAL_TOOL,
+        cleanup=CLEANUP_TOOL,
     )
 
 

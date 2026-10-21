@@ -8,6 +8,12 @@ from pathlib import Path
 
 ENV_PREFIX = "CAPTIONER_"
 
+DEFAULT_LAMA = "fashn-ai/LaMa"
+# LaMa is a TorchScript file from a community repository, so the default is
+# pinned to the commit it was tested with.
+DEFAULT_LAMA_REVISION = "da55aaf971ce271b42eddca79831e0f646c7711e"
+DEFAULT_UPSCALER = "caidas/swin2SR-realworld-sr-x4-64-bsrgan-psnr"
+
 
 def _env(name: str, default: str) -> str:
     return os.environ.get(ENV_PREFIX + name, default)
@@ -37,6 +43,12 @@ class ServerConfig:
     blip_model_id: str = "Salesforce/blip-image-captioning-large"
     blip_model_revision: str | None = None
     preload_blip: bool = False
+    # Text removal (LaMa) and upscaling (Swin2SR) for CLEANUP_AND_ENHANCE.
+    lama_model_id: str = DEFAULT_LAMA
+    lama_model_revision: str | None = DEFAULT_LAMA_REVISION
+    upscale_model_id: str = DEFAULT_UPSCALER
+    upscale_model_revision: str | None = None
+    max_output_side: int = 4096
     criteria_file: Path | None = None
 
     @classmethod
@@ -58,5 +70,10 @@ class ServerConfig:
             blip_model_id=_env("BLIP_MODEL_ID", "Salesforce/blip-image-captioning-large"),
             blip_model_revision=_env("BLIP_MODEL_REVISION", "") or None,
             preload_blip=_env_bool("PRELOAD_BLIP", False),
+            lama_model_id=_env("LAMA_MODEL_ID", DEFAULT_LAMA),
+            lama_model_revision=_env("LAMA_MODEL_REVISION", DEFAULT_LAMA_REVISION) or None,
+            upscale_model_id=_env("UPSCALE_MODEL_ID", DEFAULT_UPSCALER),
+            upscale_model_revision=_env("UPSCALE_MODEL_REVISION", "") or None,
+            max_output_side=int(_env("MAX_OUTPUT_SIDE", "4096")),
             criteria_file=Path(criteria).expanduser() if (criteria := _env("CRITERIA_FILE", "")) else None,
         )

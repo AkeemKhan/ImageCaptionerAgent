@@ -17,7 +17,9 @@ tool. Otherwise images are captioned in a fixed order, enforced in code:
 
 Afterwards you can choose to enhance the captions with Anthropic (improved or
 more creative, built on the existing caption) or to re-caption them with BLIP.
-On request, it also makes mirrored copies with matching captions.
+On request, it also makes mirrored copies with matching captions, and clean
+copies with watermarks, labels and app captions (Snapchat text and its bar)
+removed and the image upscaled, all on your GPU (the `CLEANUP_AND_ENHANCE` tool).
 
 It is built as two applications that talk over the
 [Model Context Protocol](https://modelcontextprotocol.io):
@@ -73,6 +75,13 @@ download:
 
 ```powershell
 .\.venv\Scripts\captioner-download-models.exe
+```
+
+To clean up and upscale images, also fetch the cleanup models (Florence-2, LaMa
+and Swin2SR, about 1.8 GB):
+
+```powershell
+.\.venv\Scripts\captioner-download-models.exe --cleanup
 ```
 
 ## Run
