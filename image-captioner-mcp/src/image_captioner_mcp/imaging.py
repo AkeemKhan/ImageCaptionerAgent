@@ -6,10 +6,12 @@ import re
 from pathlib import Path
 from typing import Literal
 
-from PIL import Image
+from PIL import Image, ImageOps
+from PIL.PngImagePlugin import PngInfo
 
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 FLIP_SUFFIX = "_flipped"
+CLEAN_SUFFIX = "_clean"
 
 FlipDirection = Literal["horizontal", "vertical"]
 
@@ -67,6 +69,41 @@ def load_rgb(path: Path, max_side: int) -> Image.Image:
     if max(rgb.size) > max_side:
         rgb.thumbnail((max_side, max_side), Image.Resampling.LANCZOS)
     return rgb
+
+
+def load_upright(path: Path) -> tuple[Image.Image, dict[str, str]]:
+    """Open an image at full size, turned upright by its EXIF orientation.
+
+    Also returns its PNG text chunks (the generation prompt, if any).
+    """
+    with Image.open(require_image(path)) as img:
+        img.load()
+        text = {k: v for k, v in getattr(img, "text", {}).items() if isinstance(v, str)}
+        return ImageOps.exif_transpose(img), text
+
+
+def save_cleaned(
+    image: Image.Image, source: Path, output_dir: Path, text: dict[str, str], overwrite: bool = True
+) -> Path:
+    """Save a cleaned copy of ``source`` as ``<stem>_clean<ext>`` in ``output_dir``.
+
+    PNG text chunks are kept: removing an overlay does not change what the
+    generation prompt describes.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    target = output_dir / f"{source.stem}{CLEAN_SUFFIX}{source.suffix.lower()}"
+    if target.exists() and not overwrite:
+        raise FileExistsError(f"cleaned image already exists: {target.name}")
+    if target.suffix in {".jpg", ".jpeg"}:
+        image.convert("RGB").save(target, quality=95)
+    elif target.suffix == ".webp":
+        image.save(target, quality=95)
+    else:
+        info = PngInfo()
+        for key, value in text.items():
+            info.add_text(key, value)
+        image.save(target, pnginfo=info)
+    return target
 
 
 def flip_image(path: Path, output_dir: Path, direction: FlipDirection = "horizontal") -> Path:

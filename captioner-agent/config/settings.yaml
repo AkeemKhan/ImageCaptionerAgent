@@ -17,6 +17,24 @@ refusal_fallbacks: true
 detect_manual_captioning: true
 router_model: claude-haiku-5-5
 
+# Gemini as an optional backend for CLEANUP_AND_ENHANCE: from one prompt it removes
+# overlaid text with its bubbles, bars and boxes, fills them in and returns a
+# high-resolution image. OFF by default because it sends images to Google (and is
+# billed per image). When on, and GEMINI_API_KEY is set, the chat asks you,
+# "Local or Gemini?", before every cleanup request; nothing is sent until you pick Gemini.
+gemini_cleanup: true
+# A Gemini image model. gemini-2.5-flash-image declined to remove watermarks in testing.
+gemini_model: gemini-3-pro-image-preview
+# If Gemini returns a smaller image than asked for: keep Gemini's own pixels (none,
+# sharpest), upscale them with the local model (local, softer) or resize them (resize).
+gemini_upscale_fallback: none
+# The size Gemini is asked for: 1K, 2K or 4K. The prompt, not the size, drives quality;
+# 4K is slower and costs more.
+gemini_image_size: 2K
+# The prompt Gemini gets. Edit it to change what is removed and how the result
+# should look; changes apply to the next cleanup without a restart.
+gemini_prompt_file: config/gemini_cleanup_prompt.md
+
 # Web server.
 host: 127.0.0.1
 port: 8000

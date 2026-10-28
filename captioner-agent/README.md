@@ -60,6 +60,42 @@ and runs before Claude is asked anything:
 4. Claude then asks once whether you also want horizontally flipped copies. If you say yes, each copy is saved as
    `Image1_flipped.png` with a caption in which left and right are swapped.
 
+**Cleanup and upscaling, on request.** Ask Claude to remove watermarks, text,
+usernames or a Snapchat caption, or to upscale your images, and it runs the
+`CLEANUP_AND_ENHANCE` tool on your GPU. Each image gets a copy such as
+`Image1_clean.png` (upscaled 2x unless you ask for 4x or none) with the
+original's caption, and the original is left alone. Claude tells you what text
+was removed. If some of it belonged in the picture, such as a sign, say so and
+it runs again keeping that text. A logo without readable text can be removed
+too: tell Claude where it is. If you also want flipped copies, ask for the
+cleanup first, so the flipped copies are made from the clean images.
+
+**Gemini for cleanup and upscaling (optional).** Instead of the local models,
+Gemini can do the whole job from a prompt: remove every overlay (text with the
+speech bubbles, caption bars, boxes and borders around it, stickers, product cards,
+inset photos), rebuild those areas, restore the photo (grain, noise, compression,
+blur) and make it sharp rather than blurry. It
+is off by default because it sends your images to Google and is billed per image.
+To turn it on:
+
+1. Create a key at [Google AI Studio](https://aistudio.google.com/apikey), turn
+   on billing for its project (image output is not in the free tier), and put
+   `GEMINI_API_KEY=...` in `.env`.
+2. Set `gemini_cleanup: true` in `config/settings.yaml`.
+
+From then on, the first time you ask for a cleanup, the chat asks **Local** or
+**Gemini** and waits. This is enforced in code: Claude cannot choose Gemini
+itself, and a cleanup is not run until you answer. Your answer covers that one
+request; the next one asks again. Anything specific you ask for ("also remove the
+heart stickers", "keep the frame") is passed to Gemini with the image.
+
+What Gemini is told lives in [config/gemini_cleanup_prompt.md](config/gemini_cleanup_prompt.md).
+Edit it to change what is removed or how the result should look; the next cleanup
+uses your version. If Gemini declines (it sometimes refuses to remove watermarks)
+or fails, the same image is cleaned locally and Claude tells you why. The other
+settings are `gemini_model`, `gemini_image_size` and `gemini_upscale_fallback`,
+explained in `settings.yaml`.
+
 ## Configuration
 
 | File | Purpose |

@@ -13,6 +13,7 @@ from PIL import Image
 
 IMAGE_EXTENSIONS = frozenset({".png", ".jpg", ".jpeg", ".webp"})
 FLIP_SUFFIX = "_flipped"
+CLEAN_SUFFIX = "_clean"
 THUMBNAIL_SIDE = 256
 VISION_MAX_SIDE = 1568
 MAX_STEM_CHARS = 100
@@ -82,7 +83,7 @@ class SessionFiles:
         self.caption_file(image_name).write_text(text.strip(), encoding="utf-8", newline="\n")
 
     def list_items(self) -> list[dict[str, Any]]:
-        """Every image in the session with its caption, originals before flipped copies."""
+        """Every image in the session with its caption, originals before flipped and clean copies."""
         items: list[dict[str, Any]] = []
         for kind, folder in (("uploads", self.uploads), ("outputs", self.outputs)):
             if not folder.is_dir():
@@ -91,11 +92,13 @@ class SessionFiles:
                 if not path.is_file() or path.suffix.lower() not in IMAGE_EXTENSIONS:
                     continue
                 caption_file = self.caption_file(path.name)
+                stem = path.stem.lower() if kind == "outputs" else ""
                 items.append(
                     {
                         "name": path.name,
                         "kind": kind,
-                        "flipped": kind == "outputs",
+                        "flipped": FLIP_SUFFIX in stem,
+                        "cleaned": CLEAN_SUFFIX in stem,
                         "caption_file": caption_file.name,
                         "caption": caption_file.read_text(encoding="utf-8")
                         if caption_file.is_file()

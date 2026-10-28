@@ -4,7 +4,8 @@ Without this, each model downloads the first time it is used, which can take
 minutes and looks like a hang. Run it once::
 
     captioner-download-models              # BLIP only (about 1.9 GB)
-    captioner-download-models --all        # BLIP and Florence-2
+    captioner-download-models --cleanup    # Florence-2, LaMa and Swin2SR, for CLEANUP_AND_ENHANCE
+    captioner-download-models --all        # all of them, Florence-2 included
     captioner-download-models --dry-run    # list what would be fetched
 
 Model repositories often hold the same weights in several formats (PyTorch,
@@ -87,15 +88,22 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Download the captioning models.")
     parser.add_argument("--blip", action="store_true", help="download BLIP (the default)")
     parser.add_argument("--florence", action="store_true", help="download Florence-2")
-    parser.add_argument("--all", action="store_true", help="download both models")
+    parser.add_argument(
+        "--cleanup", action="store_true", help="download LaMa and Swin2SR, for removing text and upscaling"
+    )
+    parser.add_argument("--all", action="store_true", help="download every model")
     parser.add_argument("--dry-run", action="store_true", help="list the files without downloading")
     args = parser.parse_args(argv)
 
     targets: list[tuple[str, str | None]] = []
-    if args.blip or args.all or not args.florence:
+    if args.blip or args.all or not (args.florence or args.cleanup):
         targets.append((config.blip_model_id, config.blip_model_revision))
-    if args.florence or args.all:
+    # Cleanup reads text with Florence-2, so it needs that model too.
+    if args.florence or args.cleanup or args.all:
         targets.append((config.model_id, config.model_revision))
+    if args.cleanup or args.all:
+        targets.append((config.lama_model_id, config.lama_model_revision))
+        targets.append((config.upscale_model_id, config.upscale_model_revision))
 
     for repo_id, revision in targets:
         try:

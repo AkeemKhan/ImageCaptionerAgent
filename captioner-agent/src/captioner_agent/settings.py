@@ -10,6 +10,7 @@ import yaml
 from pydantic import BaseModel, Field
 
 SETTINGS_ENV = "CAPTIONER_AGENT_SETTINGS"
+GEMINI_KEY_ENV = "GEMINI_API_KEY"
 DEFAULT_SETTINGS_PATH = Path("config") / "settings.yaml"
 
 
@@ -30,6 +31,17 @@ class Settings(BaseModel):
     # request to caption them by hand. Turn off to always caption automatically.
     detect_manual_captioning: bool = True
     router_model: str = "claude-haiku-5-5"
+    # Gemini as an optional backend for CLEANUP_AND_ENHANCE. Off by default: it sends
+    # images to Google. Needs GEMINI_API_KEY; the chat asks before using it.
+    gemini_cleanup: bool = False
+    gemini_model: str = "gemini-3-pro-image-preview"
+    # When Gemini's image is smaller than asked for: keep it (sharpest), upscale it locally,
+    # or resize it.
+    gemini_upscale_fallback: Literal["none", "local", "resize"] = "none"
+    # The size Gemini is asked for when upscaling.
+    gemini_image_size: Literal["1K", "2K", "4K"] = "2K"
+    # The base prompt Gemini gets, editable; the server's built-in one if missing or empty.
+    gemini_prompt_file: Path = Path("config") / "gemini_cleanup_prompt.md"
 
     host: str = "127.0.0.1"
     port: int = 8000
@@ -44,6 +56,11 @@ class Settings(BaseModel):
     caption_style: Literal["short", "detailed", "more_detailed"] = "detailed"
 
     mcp: McpSettings = Field(default_factory=McpSettings)
+
+    @property
+    def gemini_cleanup_ready(self) -> bool:
+        """Whether cleanup may use Gemini: switched on, and a key is available."""
+        return self.gemini_cleanup and bool(os.environ.get(GEMINI_KEY_ENV, "").strip())
 
     @property
     def sessions_dir(self) -> Path:
@@ -75,4 +92,5 @@ def load_settings(path: Path | None = None) -> Settings:
     settings = Settings.model_validate(raw)
     settings.data_dir = (base_dir / settings.data_dir).resolve()
     settings.criteria_file = (base_dir / settings.criteria_file).resolve()
+    settings.gemini_prompt_file = (base_dir / settings.gemini_prompt_file).resolve()
     return settings

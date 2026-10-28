@@ -11,6 +11,7 @@ from typing import Any
 
 import jsonschema
 
+from .cleanup_choice import CLEANUP_OPTIONS, CleanupBackend, gate_message, parse_cleanup_choice
 from .files import FileKind, InvalidFileError, SessionFiles
 from .llm import LLMError, LLMProvider, TurnResult
 from .pipeline import (
@@ -22,6 +23,7 @@ from .pipeline import (
 )
 from .prompts import (
     ASK_USER_TOOL,
+    CLEANUP_TOOL,
     DESCRIBE_TOOL,
     ENHANCE_MODES,
     ENHANCE_TOOL,
@@ -185,6 +187,12 @@ class CaptionAgent:
         elif self._settings.vision_backend != "ask":
             chosen = self._settings.vision_backend
 
+        # Whether the user has just answered the local-or-Gemini cleanup question. It covers this
+        # message only: a later cleanup request asks again.
+        cleanup_backend: CleanupBackend | None = None
+        if ask_pending is not None and ask_pending.get("choice", {}).get("options") == CLEANUP_OPTIONS:
+            cleanup_backend = parse_cleanup_choice(text)
+
         if uploaded and not manual:
             async for event in self._png_step(files, uploaded, outcomes, missing, transcript):
                 yield event
@@ -224,7 +232,9 @@ class CaptionAgent:
             ASK_USER_DEFINITION,
         ]
         schemas = {tool["name"]: tool["input_schema"] for tool in tools}
-        system = build_system_prompt(load_criteria(self._settings.criteria_file))
+        system = build_system_prompt(
+            load_criteria(self._settings.criteria_file), self._settings.gemini_cleanup_ready
+        )
 
         try:
             for _ in range(MAX_MODEL_CALLS_PER_TURN):
@@ -258,7 +268,7 @@ class CaptionAgent:
                     raise LLMError("The response was cut off mid-action. Try a smaller batch.")
 
                 results: list[dict[str, Any]] = []
-                async for event in self._run_tools(files, tool_uses, schemas, results):
+                async for event in self._run_tools(files, tool_uses, schemas, results, cleanup_backend):
                     if event["type"] == "tool_end":
                         transcript.append({**event, "type": "tool"})
                     yield event
@@ -381,9 +391,22 @@ class CaptionAgent:
         tool_uses: list[dict[str, Any]],
         schemas: dict[str, dict[str, Any]],
         results: list[dict[str, Any]],
+        cleanup_backend: CleanupBackend | None = None,
     ) -> AsyncIterator[Event]:
         """Run every tool call concurrently, appending tool_result blocks to ``results``."""
-        calls = [b for b in tool_uses if b["name"] != ASK_USER_TOOL]
+        # The backend is settled before a step is announced, so the user sees the one that runs.
+        calls: list[dict[str, Any]] = []
+        refused: dict[str, ToolResult] = {}
+        for block in tool_uses:
+            if block["name"] == ASK_USER_TOOL:
+                continue
+            if block["name"] == CLEANUP_TOOL and _validate(block, schemas) is None:
+                chosen = self._cleanup_backend(block, cleanup_backend)
+                if isinstance(chosen, ToolResult):
+                    refused[block["id"]] = chosen
+                else:
+                    block = chosen
+            calls.append(block)
         for block in calls:
             yield {"type": "tool_start", "id": block["id"], "name": block["name"], "input": block["input"]}
 
@@ -391,6 +414,8 @@ class CaptionAgent:
             error = _validate(block, schemas)
             if error is not None:
                 return block, ToolResult(error, is_error=True)
+            if block["id"] in refused:
+                return block, refused[block["id"]]
             if block["name"] in LOCAL_TOOLS:
                 return block, await self._local_tool(files, block)
             return block, await self._toolbox.call(block["name"], block["input"])
@@ -418,6 +443,22 @@ class CaptionAgent:
                     "is_error": outcome.is_error,
                 }
             )
+
+    def _cleanup_backend(
+        self, block: dict[str, Any], chosen: CleanupBackend | None
+    ) -> dict[str, Any] | ToolResult:
+        """The cleanup call with the backend the app decided on, or a refusal.
+
+        Claude never picks the backend: whatever it passes is overwritten. Gemini sends images
+        to Google, so while it is available a call is refused until the user has chosen.
+        """
+        if not self._settings.gemini_cleanup_ready:
+            backend: CleanupBackend = "local"
+        elif chosen is None:
+            return ToolResult(gate_message(CLEANUP_TOOL, ASK_USER_TOOL), is_error=True)
+        else:
+            backend = chosen
+        return {**block, "input": {**block["input"], "backend": backend}}
 
     def _pending_question(
         self, tool_uses: list[dict[str, Any]], results: list[dict[str, Any]]

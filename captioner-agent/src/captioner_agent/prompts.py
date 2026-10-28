@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .cleanup_choice import GEMINI_OPTION, LOCAL_OPTION
 from .files import SessionFiles
 
 ASK_USER_TOOL = "ask_user"
@@ -14,6 +15,7 @@ ENHANCE_TOOL = "ENHANCE_CAPTION"
 # Provided by the MCP server; named here so the prompt can refer to it.
 BLIP_TOOL = "BLIP_CAPTIONER"
 MANUAL_TOOL = "MANUAL_CAPTION"
+CLEANUP_TOOL = "CLEANUP_AND_ENHANCE"
 
 _MANUAL_ROUTER_PROMPT = """\
 You route messages in an image-captioning app. The user has attached images \
@@ -31,6 +33,26 @@ automatic captions should look (shorter, add a trigger word, and so on).
 
 Reply with exactly one word: manual or automatic.
 """
+
+# Added to the cleanup section only when Gemini is switched on and has a key.
+_CLEANUP_CHOICE = """
+- {cleanup} can also use Gemini, which works from a prompt: it removes every \
+overlay (text with its bubbles, bars, boxes and borders, stickers, product cards, \
+inset photos), rebuilds those areas, restores the photo (grain, noise, compression, \
+blur) and sharpens it. Gemini runs on Google's servers: the images \
+leave this machine and are billed per image. So before the first cleanup in a \
+request, ask the user which to use with {ask_user}, with exactly these two \
+options: "{local}" and "{gemini}". In the question, say how many images are \
+involved. Wait for the answer, then call the tool. Never pass its backend \
+argument: the app applies the user's choice, and refuses the call until they \
+have chosen.
+- With Gemini, pass any specific wishes the user voiced (for example "also remove \
+the emoji stickers" or "leave the frame") as instructions, in their words. With \
+Gemini the result's removed_text is empty, since the prompt rather than text \
+detection decides what goes, so describe what was asked for, not a list of texts.
+- The result's backend field says which one made the file. If fallback_reason is \
+set, Gemini could not be used for that image and the local models ran instead: \
+tell the user why. Gemini sometimes declines to remove watermarks."""
 
 FALLBACK_CRITERIA = (
     "Write one plain-English caption on a single line, 15 to 40 words, subject first. "
@@ -146,6 +168,30 @@ output_dir, pass the image's caption to mirror_caption so that left and right \
 match the mirrored picture, and save the result with write_caption using the \
 flipped file as image_path and output_dir as the destination.
 
+# Cleaning up and upscaling
+
+The {cleanup} tool removes text laid over an image, such as watermarks, \
+usernames, labels and Snapchat-style caption bars, and upscales the image. It \
+runs on this machine. Use it when the user asks to clean up images, remove \
+watermarks or text, or upscale them. Do not run it unprompted: you cannot see \
+whether an image has anything to remove.
+
+- Call it once per image, in parallel, with the image's path from upload_dir \
+and output_dir. It saves "<stem>_clean<ext>" and never changes the original. \
+Leave scale at 2 unless the user asks for 4, or for no upscaling (1). To only \
+upscale, pass remove_text false.
+- The text detection cannot tell an overlay from text that belongs in the \
+picture, such as a sign or a shirt. The result lists every text it removed: \
+point out any that sounds like part of the scene, and if the user wants it \
+back, run the tool again on the original image with keep_text. For a logo \
+without readable text, pass regions as fractions of the image, placed where \
+the user says it is.
+- The clean copy needs its own caption file. Its content is the same picture, \
+so save the original image's current caption for it with write_caption, \
+using the clean file as image_path and output_dir as the destination.
+- If the user also wants flipped copies, flip the clean copies rather than \
+the originals.{cleanup_choice}
+
 # Other requests
 
 Pass paths to tools exactly as they appear in the blocks, and write every file \
@@ -229,14 +275,20 @@ def load_criteria(path: Path) -> str:
     return text or FALLBACK_CRITERIA
 
 
-def build_system_prompt(criteria: str) -> str:
+def build_system_prompt(criteria: str, gemini_cleanup: bool = False) -> str:
     return _SYSTEM_TEMPLATE.format(
         criteria=criteria,
+        cleanup_choice=_CLEANUP_CHOICE.format(
+            ask_user=ASK_USER_TOOL, local=LOCAL_OPTION, gemini=GEMINI_OPTION, cleanup=CLEANUP_TOOL
+        )
+        if gemini_cleanup
+        else "",
         ask_user=ASK_USER_TOOL,
         describe=DESCRIBE_TOOL,
         enhance=ENHANCE_TOOL,
         blip=BLIP_TOOL,
         manual=MANUAL_TOOL,
+        cleanup=CLEANUP_TOOL,
     )
 
 

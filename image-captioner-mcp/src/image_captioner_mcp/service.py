@@ -2,26 +2,53 @@
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
-from . import imaging, png_caption, png_meta
-from .captioner import CAPTION_STYLES, Captioner, CaptionStyle, create_blip_captioner
+from PIL import Image
+
+from . import cleanup, gemini_cleanup, imaging, png_caption, png_meta
+from .captioner import CAPTION_STYLES, Captioner, CaptionStyle, TextBox, create_blip_captioner
+from .cleanup import Enhancer, NoTextFinder, TextFinder
 from .config import ServerConfig
+from .gemini import GeminiEditor, HttpGeminiEditor
 
 MAX_MANUAL_CAPTIONS = 500
+
+
+def _create_gemini(config: ServerConfig) -> GeminiEditor | None:
+    """The Gemini editor, only if the operator turned it on and gave a key."""
+    if not (config.gemini_enabled and config.gemini_api_key):
+        return None
+    return HttpGeminiEditor(config.gemini_api_key, config.gemini_model, config.gemini_timeout_seconds)
 
 
 class CaptionService:
     """Implements each tool against paths confined to ``config.allowed_root``."""
 
     def __init__(
-        self, config: ServerConfig, captioner: Captioner, blip_captioner: Captioner | None = None
+        self,
+        config: ServerConfig,
+        captioner: Captioner,
+        blip_captioner: Captioner | None = None,
+        enhancer: Enhancer | None = None,
+        text_finder: TextFinder | None = None,
+        gemini: GeminiEditor | None = None,
     ) -> None:
         self.config = config
         self.captioner = captioner
         # Creating a BLIP captioner loads nothing; its model loads on first use.
         self.blip_captioner = blip_captioner or create_blip_captioner(config)
+        # Likewise the cleanup models. Text is found with the captioning model
+        # (Florence-2) when it can read text, so no second copy is loaded.
+        self.enhancer = enhancer or cleanup.create_enhancer(config)
+        if text_finder is None:
+            text_finder = captioner if isinstance(captioner, TextFinder) else NoTextFinder()
+        self.text_finder = text_finder
+        # Only present when the operator enabled Gemini and gave a key; None means
+        # no image can be sent to Google by this server.
+        self.gemini = gemini or _create_gemini(config)
 
     def resolve(self, path: str) -> Path:
         return imaging.resolve_inside(self.config.allowed_root, path)
@@ -129,6 +156,91 @@ class CaptionService:
         image = self.resolve(path)
         target = imaging.flip_image(image, self._output_dir(output_dir, image.parent), direction)
         return {"flipped_path": self._display(target), "direction": direction}
+
+    def cleanup_and_enhance(
+        self,
+        path: str,
+        output_dir: str | None = None,
+        remove_text: bool = True,
+        keep_text: Sequence[str] = (),
+        regions: Sequence[cleanup.Region] = (),
+        scale: int = 2,
+        overwrite: bool = True,
+        backend: str = "local",
+        instructions: str = "",
+    ) -> dict[str, Any]:
+        """Remove overlaid text and upscale; save ``<stem>_clean<ext>``, leaving the original alone.
+
+        ``backend`` is ``local`` (models on this machine) or ``gemini`` (the image is sent to
+        Google). Gemini works from a prompt and falls back to local when it cannot be used;
+        ``instructions`` are the user's own wishes, added to its prompt.
+        """
+        if backend not in ("local", "gemini"):
+            raise ValueError("backend must be local or gemini")
+        if backend == "gemini" and self.gemini is None:
+            raise ValueError(
+                "Gemini cleanup is not enabled on this server: set CAPTIONER_GEMINI_ENABLED=true "
+                "and provide GEMINI_API_KEY"
+            )
+        source = self.resolve(path)
+        target_dir = self._output_dir(output_dir, source.parent)
+        image, text = imaging.load_upright(source)
+        alpha = image.getchannel("A") if "A" in image.getbands() else None
+        options = {
+            "remove_text": remove_text,
+            "keep_text": keep_text,
+            "regions": regions,
+            "scale": scale,
+            "max_side": self.config.max_output_side,
+        }
+        rgb = image.convert("RGB")
+        if backend == "gemini" and self.gemini is not None:
+            result = gemini_cleanup.clean_image_with_gemini(
+                rgb,
+                self.text_finder,
+                self.enhancer,
+                self.gemini,
+                upscale_fallback=self.config.gemini_upscale_fallback,
+                image_size=self.config.gemini_image_size,
+                instructions=instructions,
+                # Read on every call, so edits to the prompt file apply without a restart.
+                base_prompt=gemini_cleanup.load_prompt(self.config.gemini_prompt_file),
+                **options,  # type: ignore[arg-type]
+            )
+        else:
+            result = cleanup.clean_image(rgb, self.text_finder, self.enhancer, **options)  # type: ignore[arg-type]
+        cleaned = result.image
+        if alpha is not None:
+            cleaned.putalpha(alpha.resize(cleaned.size, Image.Resampling.LANCZOS))
+        target = imaging.save_cleaned(cleaned, source, target_dir, text, overwrite)
+
+        def listed(items: list[TextBox]) -> list[dict[str, Any]]:
+            shown = items[: cleanup.MAX_REPORTED_TEXT]
+            return [{"text": t.text, "box": [round(v) for v in t.box]} for t in shown]
+
+        sent_to_google = backend == "gemini" and result.backend == "gemini"
+        report: dict[str, Any] = {
+            "path": self._display(source),
+            "cleaned_path": self._display(target),
+            "removed_text": listed(result.removed),
+            "kept_text": listed(result.kept),
+            "caption_bars": result.caption_bars,
+            "regions_removed": result.regions,
+            "original_size": list(image.size),
+            "size": list(cleaned.size),
+            "upscaled_by": result.upscaled_by,
+            "backend": result.backend,
+            "device": self.enhancer.device if result.backend == "local" else "gemini",
+        }
+        if backend == "gemini":
+            report["requested_backend"] = "gemini"
+            report["image_sent_to_google"] = result.backend == "gemini" or result.fallback_reason is not None
+        if result.fallback_reason:
+            report["fallback_reason"] = result.fallback_reason
+        if sent_to_google:
+            report["gemini_model"] = self.gemini.model if self.gemini else self.config.gemini_model
+            report["gemini_size"] = list(result.gemini_size or ())
+        return report
 
     def caption_to_file(
         self, image: Path, output_dir: Path, style: CaptionStyle, overwrite: bool

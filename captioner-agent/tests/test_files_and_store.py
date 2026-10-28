@@ -76,6 +76,20 @@ def test_list_items_pairs_images_with_captions(files: SessionFiles) -> None:
     ]
 
 
+def test_list_items_marks_clean_and_flipped_copies(files: SessionFiles) -> None:
+    make_png(files.uploads / "a_clean.png")  # an upload named like a copy is still an original
+    make_png(files.outputs / "a_clean.png")
+    make_png(files.outputs / "a_clean_flipped.png")
+
+    items = files.list_items()
+
+    assert [(i["kind"], i["name"], i["cleaned"], i["flipped"]) for i in items] == [
+        ("uploads", "a_clean.png", False, False),
+        ("outputs", "a_clean.png", True, False),
+        ("outputs", "a_clean_flipped.png", True, True),
+    ]
+
+
 def test_write_caption_only_for_known_images(files: SessionFiles) -> None:
     make_png(files.uploads / "a.png")
 
